@@ -10,6 +10,9 @@ routines — is the original work of Ryan Allured and contributors, under the
 MIT licence in `LICENSE`. This fork adds the `gui/` package, the build
 script, the test suite, and fixes to make the package import off Windows.
 
+Fuller docs, including an architecture walkthrough, live in the
+[wiki](https://github.com/jamccoy/PyXFocus_GUI/wiki).
+
 ## Upstream acknowledgement
 
 Use of this software for academic and professional optical design work is permitted and encouraged.
