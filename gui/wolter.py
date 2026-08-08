@@ -222,8 +222,17 @@ class TraceResult(object):
         self.params = params
         self.rays = None
         #: Ray positions at each stage, for the layout plot.
+        #: Ray paths through the system, shape (stage, ray), stages being
+        #: launch / primary / secondary / focus. path_z and path_r are what
+        #: the 2D layout draws; path_x and path_y are what 3D needs.
         self.path_z = None
         self.path_r = None
+        self.path_x = None
+        self.path_y = None
+        #: Launch index of each drawn path, and of each surviving ray, so a
+        #: path can be tied back to the ray it belongs to.
+        self.path_ids = None
+        self.ray_ids = None
         #: Performance metrics.
         self.hpd_arcsec = np.nan
         self.rms_arcsec = np.nan
@@ -348,6 +357,10 @@ def trace(params, record_paths=True, num_paths=40):
 
     rays = sources.annulus(rin, rout, int(params.num_rays))
     result.num_launched = int(params.num_rays)
+    #: Launch index of every ray still alive, carried through every
+    #: vignette so path samples can be matched up by identity rather than
+    #: by position. See _stack_paths for why position does not work.
+    ray_ids = np.arange(len(rays[1]))
 
     # Start the rays above the primary, still travelling in -z.
     start_z = params.z0 + params.primary_length + 500.
@@ -363,13 +376,14 @@ def trace(params, record_paths=True, num_paths=40):
         rays[5] = np.repeat(np.sin(theta) * np.sin(phi), n_rays)
         rays[6] = np.repeat(-np.cos(theta), n_rays)
 
-    paths = []
+    stages = []
     if record_paths:
-        paths.append(_sample(rays, num_paths))
+        stages.append(_sample(rays, ray_ids))
 
     # --- Primary ---
     surf.wolterprimary(rays, params.r0, params.z0, psi=params.psi)
-    rays, result.nonconverged_primary = _drop_dead(rays)
+    rays, result.nonconverged_primary, alive = _drop_dead(rays)
+    ray_ids = ray_ids[alive]
     if len(rays[1]) == 0:
         result.message = ('The surface solver failed to converge on the '
                           'primary for every ray.')
@@ -381,14 +395,16 @@ def trace(params, record_paths=True, num_paths=40):
         result.message = 'All rays missed the primary mirror.'
         return result
     rays = tran.vignette(rays, ind=ind)
+    ray_ids = ray_ids[ind]
     if record_paths:
-        paths.append(_sample(rays, num_paths))
+        stages.append(_sample(rays, ray_ids))
 
     # --- Secondary, in its (possibly misaligned) frame ---
     misalign = params.misalignment()
     tran.transform(rays, *misalign)
     surf.woltersecondary(rays, params.r0, params.z0, psi=params.psi)
-    rays, result.nonconverged_secondary = _drop_dead(rays)
+    rays, result.nonconverged_secondary, alive = _drop_dead(rays)
+    ray_ids = ray_ids[alive]
     if len(rays[1]) == 0:
         tran.itransform(rays, *misalign)
         result.message = ('The surface solver failed to converge on the '
@@ -403,14 +419,16 @@ def trace(params, record_paths=True, num_paths=40):
         result.message = 'All rays missed the secondary mirror.'
         return result
     rays = tran.vignette(rays, ind=ind)
+    ray_ids = ray_ids[ind]
     if record_paths:
-        paths.append(_sample(rays, num_paths))
+        stages.append(_sample(rays, ray_ids))
 
     # Drop any ray that picked up a non-finite position.
     good = np.isfinite(rays[1]) & np.isfinite(rays[2]) & np.isfinite(rays[3])
     result.num_nonfinite = int((~good).sum())
     if not good.all():
         rays = tran.vignette(rays, ind=good)
+        ray_ids = ray_ids[good]
     if len(rays[1]) == 0:
         result.message = 'No rays survived the trace.'
         return result
@@ -418,9 +436,10 @@ def trace(params, record_paths=True, num_paths=40):
     # --- Best focus ---
     result.focus_z = surf.focusI(rays)
     if record_paths:
-        paths.append(_sample(rays, num_paths))
+        stages.append(_sample(rays, ray_ids))
 
     result.rays = rays
+    result.ray_ids = ray_ids
     result.num_surviving = len(rays[1])
     result.hpd_mm = anal.hpd(rays)
     result.rms_mm = anal.rmsCentroid(rays)
@@ -428,7 +447,13 @@ def trace(params, record_paths=True, num_paths=40):
     result.rms_arcsec = result.rms_mm / params.z0 * _ARCSEC_PER_RAD
 
     if record_paths:
-        result.path_z, result.path_r = _stack_paths(paths)
+        ids, xs, ys, zs = _stack_paths(stages, num_paths, result.focus_z)
+        result.path_ids = ids
+        result.path_x, result.path_y, result.path_z = xs, ys, zs
+        # path_r keeps its old name and shape so the 2D layout tab needs no
+        # change and inherits the alignment fix for free.
+        if xs is not None:
+            result.path_r = np.hypot(xs, ys)
 
     _add_warnings(result)
     return result
@@ -472,40 +497,84 @@ def _drop_dead(rays):
 
     Returns
     -------
-    (rays, ndead)
+    (rays, ndead, alive)
+        ``alive`` is the keep-mask, so a caller tracking ray identities can
+        index its own arrays the same way vignette indexed the rays.
     """
     alive = rays[4] ** 2 + rays[5] ** 2 + rays[6] ** 2 >= 0.1
     ndead = int((~alive).sum())
     if ndead:
         rays = tran.vignette(rays, ind=alive)
-    return rays, ndead
+    return rays, ndead, alive
 
 
-def _sample(rays, num):
-    """Grab (z, r) for the first ``num`` rays at the current surface."""
-    n = min(num, len(rays[1]))
-    z = np.array(rays[3][:n], dtype=float)
-    r = np.sqrt(np.array(rays[1][:n], dtype=float) ** 2 +
-                np.array(rays[2][:n], dtype=float) ** 2)
-    return z, r
-
-
-def _stack_paths(paths):
+def _sample(rays, ray_ids):
     """
-    Assemble per-stage samples into (z, r) arrays of shape (stages, rays).
+    Copy this surface's positions, and the launch ids they belong to.
 
-    Vignetting shrinks the ray list between stages, so every stage is
-    trimmed to the shortest one to keep the columns aligned.  This traces
-    the surviving rays only, which is what the layout plot should show.
+    Copies rather than views: the Fortran surface routines and
+    ``tran.transform`` mutate ``rays`` in place, so a view would be
+    rewritten by the next stage.
     """
-    if not paths:
-        return None, None
-    n = min(len(z) for z, _ in paths)
-    if n == 0:
-        return None, None
-    z = np.vstack([zz[:n] for zz, _ in paths])
-    r = np.vstack([rr[:n] for _, rr in paths])
-    return z, r
+    return (ray_ids.copy(),
+            np.array(rays[1], dtype=float),
+            np.array(rays[2], dtype=float),
+            np.array(rays[3], dtype=float))
+
+
+def _choose_paths(launch_stage, final_ids, num):
+    """
+    Pick which surviving rays to draw, spread evenly around the aperture.
+
+    Taking the first N would cluster them wherever the random source
+    happened to put its low indices; sorting by launch azimuth gives the
+    even fan a layout drawing wants.
+    """
+    ids0, x0, y0, _ = launch_stage
+    row = np.searchsorted(ids0, final_ids)
+    order = np.argsort(np.arctan2(y0[row], x0[row]))
+    if len(order) > num:
+        order = order[np.linspace(0, len(order) - 1, num).astype(int)]
+    # Sorted, because every lookup below is a searchsorted.
+    return np.sort(final_ids[order])
+
+
+def _stack_paths(stages, num, focus_z):
+    """
+    Assemble per-stage samples into ``(stages, rays)`` arrays.
+
+    Alignment is by *ray id*, not by position.  ``tran.vignette`` returns
+    ``[rays[i][ind] ...]``, so survivors are a subsequence and not a
+    prefix -- the previous "truncate every stage to the shortest" scheme
+    joined one ray's launch point to a different ray's mirror hit.
+    Measured at offaxis=10: of 40 drawn polylines only 3 connected the
+    same ray.  That was invisible in the 2D radius plot, because every
+    launch and primary radius lies in a 0.65 mm band, and would be
+    glaring in 3D where azimuth is visible.
+
+    Each stage's ids are a subset of the previous stage's and both are
+    sorted, so ``searchsorted`` recovers each chosen ray's row exactly.
+    """
+    if not stages:
+        return None, None, None, None
+    final_ids = stages[-1][0]
+    if len(final_ids) == 0:
+        return None, None, None, None
+
+    chosen = _choose_paths(stages[0], final_ids, num)
+    shape = (len(stages), len(chosen))
+    xs = np.empty(shape)
+    ys = np.empty(shape)
+    zs = np.empty(shape)
+    for k, (ids, x, y, z) in enumerate(stages):
+        row = np.searchsorted(ids, chosen)
+        xs[k], ys[k], zs[k] = x[row], y[row], z[row]
+
+    # focusI moves the coordinate FRAME, not just the rays (surfaces.focus
+    # calls tran.transform twice), so at the focus stage every ray sits at
+    # z = 0 in the focus frame.  Put it back into global z.
+    zs[-1] += focus_z
+    return chosen, xs, ys, zs
 
 
 def mirror_profile(params, num=200):
