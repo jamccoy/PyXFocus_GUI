@@ -26,6 +26,7 @@ import sys
 import tempfile
 import traceback
 
+import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
 from PyXFocus.gui import config
@@ -363,6 +364,116 @@ def test_repeated_traces_do_not_use_a_deleted_worker():
         _settle()
         window.run_trace()          # must not raise
     _settle()
+
+
+#: Containers built by _plot_tabs, kept alive for the run. A PlotTabs with
+#: no parent is collected as soon as the expression that made it ends,
+#: which destroys its C++ children -- so `_plot_tabs().tab('spot')` hands
+#: back an already-deleted widget.
+_KEEP_ALIVE = []
+
+
+def _plot_tabs():
+    from PyXFocus.gui.tabs import PlotTabs
+    tabs = PlotTabs(lambda: WolterParams())
+    _KEEP_ALIVE.append(tabs)
+    return tabs
+
+
+def test_every_tab_in_the_registry_satisfies_the_contract():
+    """Keys and titles unique, order preserved, every tab a QWidget."""
+    from PyXFocus.gui.tabs import TABS
+    keys = [spec.key for spec in TABS]
+    titles = [spec.title for spec in TABS]
+    assert len(keys) == len(set(keys)), keys
+    assert len(titles) == len(set(titles)), titles
+
+    tabs = _plot_tabs()
+    assert tabs.count() == len(TABS)
+    for index, spec in enumerate(TABS):
+        assert tabs.tabText(index) == spec.title
+        assert isinstance(tabs.tab(spec.key), QtWidgets.QWidget)
+
+
+def test_the_sweep_tab_is_not_fed_traces():
+    """
+    The documented opt-out, guarded against a well-meaning future stub.
+
+    The sweep tab runs its own computation on its own worker; a no-op
+    set_result would be a lie the container cannot see through.
+    """
+    assert not hasattr(_plot_tabs().tab('sweep'), 'set_result')
+
+
+def test_registry_order_is_append_only():
+    """
+    The active tab is persisted as an integer INDEX, in two places --
+    AppSettings.TAB and a saved configuration's ui.tab -- so inserting a
+    tab in the middle silently reopens everyone's session on a different
+    tab. New tabs go on the end until that is stored by key instead.
+    """
+    from PyXFocus.gui.tabs import TABS
+    assert [spec.key for spec in TABS][:4] == ['spot', 'layout', 'energy',
+                                               'sweep']
+
+
+def test_clear_results_does_not_remove_the_tabs():
+    """Guards against anyone renaming clear_results back to clear()."""
+    from PyXFocus.gui.tabs import TABS
+    tabs = _plot_tabs()
+    tabs.clear_results()
+    assert tabs.count() == len(TABS)
+
+
+def test_plot_tabs_do_not_paint_until_flushed():
+    """A trace must not repaint tabs nobody is looking at."""
+    tabs = _plot_tabs()
+    from PyXFocus.gui.wolter import trace
+    tabs.set_result(trace(WolterParams(num_rays=500)))
+    panes = [tabs.tab(k) for k in ('spot', 'layout', 'energy')]
+    assert [p.paints for p in panes] == [0, 0, 0]
+
+
+def test_the_spot_tab_plots_the_arcsecond_spot():
+    """Not a second source of truth: the tab plots what wolter computed."""
+    from PyXFocus.gui.wolter import trace
+    result = trace(WolterParams(offaxis=2., num_rays=500))
+    tab = _plot_tabs().tab('spot')
+    tab.set_result(result)
+    tab.flush()
+    drawn = np.asarray(tab.ax.collections[0].get_offsets())
+    x, y = result.spot_arcsec
+    assert np.allclose(drawn, np.column_stack([x, y]))
+
+
+def test_the_energy_tab_plots_what_wolter_computed():
+    from PyXFocus.gui import wolter as W
+    result = W.trace(WolterParams(offaxis=2., num_rays=500))
+    tab = _plot_tabs().tab('energy')
+    tab.set_result(result)
+    tab.flush()
+    rad, frac = W.encircled_energy(result)
+    drawn = tab.ax.lines[0].get_xydata()
+    assert np.allclose(drawn, np.column_stack([rad, frac]))
+
+
+def test_the_layout_tab_clears_its_inset():
+    """
+    One drawing entry point, so the inset reference cannot go stale.
+
+    matplotlib 3.3.2 does drop child axes on ax.clear(), so this is not
+    fixing a visible bug -- it stops _inset pointing at a removed axes,
+    which the next redraw would try to remove a second time.
+    """
+    from PyXFocus.gui.wolter import trace
+    tab = _plot_tabs().tab('layout')
+    tab.set_result(trace(WolterParams(num_rays=500)))
+    tab.flush()
+    assert tab._inset is not None
+    tab.set_result(None)
+    tab.flush()
+    assert tab._inset is None
+    assert tab.ax.lines == []
 
 
 class _Probe(object):

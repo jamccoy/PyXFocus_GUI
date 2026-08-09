@@ -17,19 +17,12 @@ import math
 import sys
 import traceback
 
-import matplotlib
-matplotlib.use('Qt5Agg')
-
-import matplotlib.patches
 import numpy as np
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
-from matplotlib.figure import Figure
 from PyQt5 import QtCore, QtWidgets
 
 from PyXFocus.gui import settings
 from PyXFocus.gui import wolter
-from PyXFocus.gui.tabs.sweep import SweepTab
+from PyXFocus.gui.tabs import PlotTabs
 from PyXFocus.gui.wolter import WolterParams
 
 
@@ -250,146 +243,6 @@ class MetricsBar(QtWidgets.QWidget):
             value.setStyleSheet(self.VALUE)
         for key in ('throughput', 'area'):
             self._captions[key + '_widget'].setStyleSheet(self.GREY)
-
-
-class PlotTabs(QtWidgets.QTabWidget):
-    """Spot diagram, telescope profile, and encircled energy."""
-
-    def __init__(self, params_provider, parent=None):
-        super(PlotTabs, self).__init__(parent)
-        self.spot_ax = self._add_tab('Spot Diagram')
-        self.layout_ax = self._add_tab('Telescope Layout')
-        self.ee_ax = self._add_tab('Encircled Energy')
-        #: Zoom inset on the layout tab, rebuilt on every redraw.
-        self._layout_inset = None
-        #: Sweeps run on demand, so this tab is not touched by draw_all.
-        self.sweep = SweepTab(params_provider)
-        self.addTab(self.sweep, 'Parameter Sweep')
-
-    def _add_tab(self, title):
-        page = QtWidgets.QWidget()
-        box = QtWidgets.QVBoxLayout(page)
-        figure = Figure(figsize=(5, 4), tight_layout=True)
-        canvas = FigureCanvasQTAgg(figure)
-        box.addWidget(NavigationToolbar2QT(canvas, page))
-        box.addWidget(canvas)
-        self.addTab(page, title)
-        ax = figure.add_subplot(111)
-        ax.canvas = canvas
-        return ax
-
-    def draw_all(self, result):
-        self._draw_spot(result)
-        self._draw_layout(result)
-        self._draw_ee(result)
-
-    def _draw_spot(self, result):
-        ax = self.spot_ax
-        ax.clear()
-        x, y = result.spot_arcsec
-        ax.scatter(x, y, s=1, alpha=.3, color='#1f77b4', edgecolors='none')
-
-        # Mark the half-power diameter for scale.
-        if np.isfinite(result.hpd_arcsec) and result.hpd_arcsec > 0:
-            circle = matplotlib.patches.Circle(
-                (0, 0), result.hpd_arcsec / 2., fill=False, color='crimson',
-                lw=1.5, ls='--', label='HPD = %.4f"' % result.hpd_arcsec)
-            ax.add_patch(circle)
-            ax.legend(loc='upper right', fontsize=8)
-
-        ax.set_xlabel('x [arcsec]')
-        ax.set_ylabel('y [arcsec]')
-        ax.set_title('Focal plane spot')
-        ax.set_aspect('equal')
-        ax.grid(alpha=.3)
-        ax.canvas.draw_idle()
-
-    def _draw_layout(self, result):
-        """
-        Telescope in profile, with a zoom inset on the mirrors.
-
-        A Wolter-I is roughly 8 m long but only ~20 cm in radius, so at a
-        scale that shows rays converging on the focus the two mirrors
-        collapse into a single invisible speck.  The inset zooms on the
-        grazing-incidence region so the primary and secondary are actually
-        distinguishable.
-        """
-        ax = self.layout_ax
-        if self._layout_inset is not None:
-            # ax.clear() leaves child axes behind, so drop it explicitly.
-            self._layout_inset.remove()
-            self._layout_inset = None
-        ax.clear()
-
-        params = result.params
-        profiles = wolter.mirror_profile(params)
-        self._plot_layout_into(ax, result, profiles, full=True)
-
-        ax.set_xlabel('z [mm]')
-        ax.set_ylabel('radius [mm]')
-        ax.set_title('Telescope profile (rays travelling −z)')
-        ax.legend(loc='upper left', fontsize=8)
-        ax.grid(alpha=.3)
-
-        # Inset zoomed on the mirrors themselves.
-        (zp, rp), (zs, rs) = profiles
-        # Rays run diagonally from bottom-left to top-right, so the bottom
-        # -right corner is free; the legend keeps the top-left.
-        inset = ax.inset_axes([0.55, 0.12, 0.42, 0.45])
-        self._plot_layout_into(inset, result, profiles, full=False)
-        zlo = params.z0 - params.secondary_length
-        zhi = params.z0 + params.primary_length
-        rlo, rhi = float(np.min(rs)), float(np.max(rp))
-        zpad, rpad = .05 * (zhi - zlo), max(.05 * (rhi - rlo), 1e-3)
-        inset.set_xlim(zlo - zpad, zhi + zpad)
-        inset.set_ylim(rlo - rpad, rhi + rpad)
-        inset.tick_params(labelsize=6)
-        inset.set_title('mirrors (zoom)', fontsize=7)
-        inset.grid(alpha=.3)
-        ax.indicate_inset_zoom(inset, edgecolor='gray')
-        self._layout_inset = inset
-
-        ax.canvas.draw_idle()
-
-    @staticmethod
-    def _plot_layout_into(ax, result, profiles, full):
-        """Draw mirrors, rays and focus into ``ax``."""
-        (zp, rp), (zs, rs) = profiles
-        if result.path_z is not None:
-            # Columns are individual rays, rows are successive surfaces.
-            ax.plot(result.path_z, result.path_r, color='#1f77b4',
-                    lw=.4, alpha=.5)
-        ax.plot(zp, rp, color='k', lw=2.5,
-                label='Primary' if full else None)
-        ax.plot(zs, rs, color='#d62728', lw=2.5,
-                label='Secondary' if full else None)
-        if full:
-            ax.axvline(0., color='crimson', ls='--', lw=1, label='Focus')
-
-    def _draw_ee(self, result):
-        ax = self.ee_ax
-        ax.clear()
-        rad, frac = wolter.encircled_energy(result)
-        if len(rad):
-            ax.plot(rad, frac, color='#1f77b4', lw=1.5)
-            # The x axis is a radius, so the half-power point sits at
-            # HPD/2 -- label both so the two can't be confused.
-            ax.axhline(.5, color='crimson', ls='--', lw=1)
-            ax.axvline(result.hpd_arcsec / 2., color='crimson', ls='--', lw=1,
-                       label='half-power radius %.4f"\n(HPD = %.4f")'
-                             % (result.hpd_arcsec / 2., result.hpd_arcsec))
-            ax.legend(loc='lower right', fontsize=8)
-        ax.set_xlabel('radius from centroid [arcsec]')
-        ax.set_ylabel('enclosed fraction')
-        ax.set_title('Encircled energy')
-        ax.set_ylim(0, 1.02)
-        ax.grid(alpha=.3)
-        ax.canvas.draw_idle()
-
-    def clear_all(self):
-        for ax in (self.spot_ax, self.layout_ax, self.ee_ax):
-            ax.clear()
-            ax.canvas.draw_idle()
 
 
 SCRIPT_TEMPLATE = '''"""Equivalent PyXFocus script for the current settings."""
@@ -644,11 +497,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._result = result
         if result.message:
             self.metrics.clear()
-            self.tabs.clear_all()
+            self.tabs.clear_results()
             self.statusBar().showMessage(result.message)
             return
         self.metrics.update_metrics(result)
-        self.tabs.draw_all(result)
+        self.tabs.set_result(result)
         status = ('Traced %d rays — HPD %.4f arcsec'
                   % (result.num_launched, result.hpd_arcsec))
         if result.warnings:

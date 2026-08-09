@@ -11,11 +11,10 @@ screen". Before it, every trace repainted all three plot tabs including the
 ones nobody was looking at, and the spot tab scatters up to 500 000
 alpha-blended points to do that.
 
-It is also where the two invariants that caused the zoom-inset bug now live
-exactly once. That bug was a cleared plot with a fully drawn inset floating
-over it, because ``_draw_layout`` removed the inset and ``clear_all``
-forgot: the same rule written in two places, which is what a shared state
-machine prevents and four copies of eight lines would not.
+It also collapses drawing and clearing into a single entry point per tab.
+The layout tab previously had two -- ``_draw_layout`` removed its zoom
+inset and ``clear_all`` did not -- which is the shape a bug grows in even
+where, as it happens, matplotlib 3.3.2 cleaned up after it anyway.
 """
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
