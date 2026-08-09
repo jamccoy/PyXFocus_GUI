@@ -654,33 +654,44 @@ def test_settings_is_the_only_qsettings_consumer():
     to remember one more thing, and key strings start appearing in two
     files with nothing keeping them in step.
     """
-    import glob
     import os
     folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gui')
     offenders = []
-    for path in sorted(glob.glob(os.path.join(folder, '*.py'))):
-        if os.path.basename(path) == 'settings.py':
-            continue
-        # 'QSettings(' -- a construction, not a mention. Other modules
-        # legitimately talk *about* QSettings in comments; what must not
-        # happen is another module reaching for one.
-        if 'QSettings(' in open(path).read():
-            offenders.append(os.path.basename(path))
+    # os.walk, not glob('gui/*.py'): a non-recursive glob would let an
+    # entire subpackage (gui/tabs/) sit outside the only check keeping
+    # QSettings behind the facade.
+    for root, _, names in os.walk(folder):
+        for name in sorted(names):
+            if not name.endswith('.py') or name == 'settings.py':
+                continue
+            path = os.path.join(root, name)
+            # 'QSettings(' -- a construction, not a mention. Other modules
+            # legitimately talk *about* QSettings in comments; what must not
+            # happen is another module reaching for one.
+            if 'QSettings(' in open(path).read():
+                offenders.append(os.path.relpath(path, folder))
     assert not offenders, 'QSettings constructed outside settings.py: %s' % offenders
 
 
-def test_config_imports_without_qt():
+def test_qt_free_modules_stay_qt_free():
     """
-    config.py must stay importable without PyQt5.
+    The scriptable modules must stay importable without PyQt5.
 
     The README promises PyQt5 is needed "only if you want the GUI", and
     this suite is the post-build install check.
+
+    A subprocess import rather than an AST scan, because this catches
+    *transitive* Qt imports too -- a pure module that grows an innocent
+    import of something that itself pulls in Qt would pass a source scan
+    and fail here, which is the right way round.
     """
     import subprocess
     import sys
-    subprocess.check_call([
-        sys.executable, '-c',
-        'import sys, PyXFocus.gui.config; assert "PyQt5" not in sys.modules'])
+    for module in ('PyXFocus.gui.wolter', 'PyXFocus.gui.config'):
+        subprocess.check_call([
+            sys.executable, '-c',
+            'import sys, %s; assert "PyQt5" not in sys.modules, '
+            '"%s pulled in Qt"' % (module, module)])
 
 
 def test_reproducible():
