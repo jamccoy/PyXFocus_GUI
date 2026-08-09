@@ -365,6 +365,92 @@ def test_repeated_traces_do_not_use_a_deleted_worker():
     _settle()
 
 
+class _Probe(object):
+    """A minimal FigurePane subclass that records what it was asked to draw."""
+
+    def __new__(cls, *args, **kwargs):
+        from PyXFocus.gui.tabs.pane import FigurePane
+
+        class Probe(FigurePane):
+            def __init__(self):
+                FigurePane.__init__(self)
+                self.drawn = []
+
+            def _draw(self, result):
+                self.drawn.append(result)
+
+        return Probe()
+
+
+def test_a_hidden_pane_does_not_paint():
+    """
+    The point of the whole class.
+
+    Every trace used to repaint all three plot tabs, including the two
+    nobody was looking at, and the spot tab scatters up to 500 000
+    alpha-blended points to do it.
+    """
+    pane = _Probe()
+    first, second, third = object(), object(), object()
+    for result in (first, second, third):
+        pane.set_result(result)
+    assert pane.paints == 0, 'a hidden pane painted %d times' % pane.paints
+    assert pane.result() is third
+
+
+def test_first_flush_paints_the_newest_result():
+    """A tab shown after several traces shows the latest, not the first."""
+    pane = _Probe()
+    first, third = object(), object()
+    pane.set_result(first)
+    pane.set_result(object())
+    pane.set_result(third)
+    pane.flush()
+    assert pane.paints == 1
+    assert pane.drawn == [third], pane.drawn
+
+
+def test_flush_is_idempotent():
+    """Re-flushing without a new result repaints nothing."""
+    pane = _Probe()
+    pane.set_result(object())
+    pane.flush()
+    pane.flush()
+    assert pane.paints == 1
+
+
+def test_flush_paints_while_hidden():
+    """
+    flush() must not re-check visibility.
+
+    show() segfaults under the offscreen platform on this machine, so if
+    flush gated on visibility every content assertion in this suite would
+    silently become a no-op.
+    """
+    pane = _Probe()
+    assert not pane.isVisible()
+    pane.set_result(object())
+    pane.flush()
+    assert pane.paints == 1
+
+
+def test_clearing_a_pane_is_a_paint():
+    """
+    set_result(None) blanks, and does so even if it happened while hidden.
+
+    Otherwise a tab hidden during a failed trace would show the previous
+    result when next opened.
+    """
+    pane = _Probe()
+    result = object()
+    pane.set_result(result)
+    pane.flush()
+    pane.set_result(None)          # while hidden
+    pane.flush()
+    assert pane.paints == 2
+    assert pane.drawn == [result, None], pane.drawn
+
+
 def _settle(rounds=80):
     """Run the event loop long enough for queued work to complete."""
     for _ in range(rounds):
