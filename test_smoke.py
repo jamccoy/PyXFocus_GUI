@@ -287,6 +287,47 @@ def _config_doc(**parameters):
                        'parameters': parameters})
 
 
+def test_every_sweepable_parameter_has_a_default_range():
+    """
+    SWEEPABLE and SWEEP_RANGES cannot drift apart.
+
+    They used to live in different modules, and sweep_range's fallback
+    would silently hand back (0, 1) for a name that had been added to one
+    and not the other.
+    """
+    from PyXFocus.gui.wolter import SWEEPABLE, SWEEP_RANGES
+    names = set(name for name, _, _ in SWEEPABLE)
+    assert names == set(SWEEP_RANGES), (
+        'mismatch: %s' % (names ^ set(SWEEP_RANGES)))
+
+
+def test_sweep_range_scales_with_the_design():
+    """Design-dependent ranges resolve against the params they are given."""
+    from PyXFocus.gui.wolter import WolterParams, SWEEPABLE, sweep_range
+    assert sweep_range('r0', WolterParams(r0=200.)) == (100., 300.)
+    # Calling every one is what actually exercises each lambda.
+    for name, _, _ in SWEEPABLE:
+        low, high = sweep_range(name, WolterParams())
+        assert np.isfinite(low) and np.isfinite(high), name
+
+
+def test_spot_arcsec_matches_encircled_energy_units():
+    """
+    The spot and the encircled-energy curve are in the same units.
+
+    np.isclose rather than ==: spot_arcsec computes ``x * (A / z0)`` and
+    encircled_energy computes ``(r / z0) * A``. The association order
+    differs on purpose -- spot_arcsec keeps the GUI's original expression
+    term for term, so moving it out of the widget left the drawn pixels
+    bit-identical.
+    """
+    from PyXFocus.gui.wolter import WolterParams, trace, encircled_energy
+    result = trace(WolterParams(offaxis=3., num_rays=4000))
+    x, y = result.spot_arcsec
+    rad, _ = encircled_energy(result)
+    assert np.isclose(np.hypot(x, y).max(), rad[-1], rtol=1e-9)
+
+
 def test_config_text_round_trip():
     """params -> text -> params preserves all 15 fields and reports nothing."""
     from PyXFocus.gui import config

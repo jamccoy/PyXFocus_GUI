@@ -285,21 +285,6 @@ class SweepWorker(QtCore.QThread):
             self.swept.emit(result)
 
 
-#: Sensible default sweep ranges, as (start, stop). Callables receive the
-#: baseline params so radius and focal length can scale with the design.
-DEFAULT_RANGES = {
-    'offaxis': (0., 10.),
-    'azimuth': (0., 360.),
-    'r0': (lambda p: p.r0 * .5, lambda p: p.r0 * 1.5),
-    'z0': (lambda p: p.z0 * .8, lambda p: p.z0 * 1.2),
-    'primary_length': (10., 300.),
-    'secondary_length': (10., 300.),
-    'psi': (0.5, 2.0),
-    'sec_dx': (0., 1.), 'sec_dy': (0., 1.), 'sec_dz': (0., 1.),
-    'sec_rx': (0., 2.), 'sec_ry': (0., 2.), 'sec_rz': (0., 2.),
-}
-
-
 class SweepTab(QtWidgets.QWidget):
     """
     Vary one parameter and plot how image quality responds.
@@ -375,13 +360,8 @@ class SweepTab(QtWidgets.QWidget):
 
     def _apply_default_range(self):
         """Pick a useful range for the newly selected parameter."""
-        name = self.combo.currentData()
-        low, high = DEFAULT_RANGES.get(name, (0., 1.))
-        params = self._params_provider()
-        if callable(low):
-            low = low(params)
-        if callable(high):
-            high = high(params)
+        low, high = wolter.sweep_range(self.combo.currentData(),
+                                       self._params_provider())
         self.start.setValue(low)
         self.stop.setValue(high)
 
@@ -527,10 +507,8 @@ class PlotTabs(QtWidgets.QTabWidget):
     def _draw_spot(self, result):
         ax = self.spot_ax
         ax.clear()
-        x, y = result.spot
-        scale = wolter._ARCSEC_PER_RAD / result.params.z0
-        ax.scatter(x * scale, y * scale, s=1, alpha=.3, color='#1f77b4',
-                   edgecolors='none')
+        x, y = result.spot_arcsec
+        ax.scatter(x, y, s=1, alpha=.3, color='#1f77b4', edgecolors='none')
 
         # Mark the half-power diameter for scale.
         if np.isfinite(result.hpd_arcsec) and result.hpd_arcsec > 0:

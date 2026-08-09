@@ -311,6 +311,20 @@ class TraceResult(object):
         x, y = self.rays[1], self.rays[2]
         return x - np.mean(x), y - np.mean(y)
 
+    @property
+    def spot_arcsec(self):
+        """
+        The focal-plane spot in arcseconds, as the plots want it.
+
+        ``hpd_arcsec`` and :func:`encircled_energy` are already in
+        arcseconds; the spot was the one member of the family that was
+        not, which is why the GUI had to reach in here for a private
+        constant and divide by z0 itself.
+        """
+        x, y = self.spot
+        scale = _ARCSEC_PER_RAD / self.params.z0
+        return x * scale, y * scale
+
 
 def shell_radii(params):
     """Inner and outer radius of the primary entrance aperture, in mm."""
@@ -678,6 +692,48 @@ SWEEPABLE = [
     ('sec_ry', 'Secondary tilt y', 'arcmin'),
     ('sec_rz', 'Secondary tilt z', 'arcmin'),
 ]
+
+
+#: A useful default range to sweep each parameter over, as (start, stop).
+#:
+#: Entries whose sensible range depends on the design are stored as
+#: callables of the baseline params, so radius and focal length scale with
+#: the system rather than being fixed numbers that only suit the default.
+#:
+#: Lives here beside SWEEPABLE rather than in the GUI so the two cannot
+#: drift: a name in one and not the other is a bug that
+#: test_every_sweepable_parameter_has_a_default_range catches, and scripted
+#: sweeps get the same defaults the GUI offers.
+SWEEP_RANGES = {
+    'offaxis': (0., 10.),
+    'azimuth': (0., 360.),
+    'r0': (lambda p: p.r0 * .5, lambda p: p.r0 * 1.5),
+    'z0': (lambda p: p.z0 * .8, lambda p: p.z0 * 1.2),
+    'primary_length': (10., 300.),
+    'secondary_length': (10., 300.),
+    'psi': (0.5, 2.0),
+    'sec_dx': (0., 1.), 'sec_dy': (0., 1.), 'sec_dz': (0., 1.),
+    'sec_rx': (0., 2.), 'sec_ry': (0., 2.), 'sec_rz': (0., 2.),
+}
+
+
+def sweep_range(name, params):
+    """
+    Default start and stop for sweeping ``name``, as two floats.
+
+    Resolves the design-dependent entries against ``params``, so callers
+    never have to know which ranges are callables.
+
+    The (0., 1.) fallback should be unreachable --
+    test_every_sweepable_parameter_has_a_default_range asserts every
+    sweepable name has an entry -- and is kept as the belt to that braces.
+    """
+    low, high = SWEEP_RANGES.get(name, (0., 1.))
+    if callable(low):
+        low = low(params)
+    if callable(high):
+        high = high(params)
+    return float(low), float(high)
 
 
 def sweep_label(name):
