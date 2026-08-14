@@ -84,6 +84,18 @@ class FigurePane(QtWidgets.QWidget):
         self._painted = self._result
         self.paints += 1
 
+    def force_repaint(self):
+        """
+        Repaint the current result even though it has not changed.
+
+        For a tab that has view controls of its own: the identity gate in
+        :meth:`flush` is right about results and knows nothing about views,
+        so a changed camera, zoom or visibility toggle would otherwise be
+        treated as a no-op.
+        """
+        self._painted = None
+        self.flush()
+
     def _draw(self, result):
         """
         Subclass hook. ``result`` is None for "clear yourself".

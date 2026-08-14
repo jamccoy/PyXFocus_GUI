@@ -687,11 +687,583 @@ def test_qt_free_modules_stay_qt_free():
     """
     import subprocess
     import sys
-    for module in ('PyXFocus.gui.wolter', 'PyXFocus.gui.config'):
+    for module in ('PyXFocus.gui.wolter', 'PyXFocus.gui.config',
+                   'PyXFocus.gui.optics'):
         subprocess.check_call([
             sys.executable, '-c',
             'import sys, %s; assert "PyQt5" not in sys.modules, '
             '"%s pulled in Qt"' % (module, module)])
+
+
+#: What `trace` produced before the flat source->primary->secondary->focus
+#: pipeline was reorganised into gui/optics.py elements.
+#:
+#: Captured from the pre-refactor code and asserted with ``==``, not
+#: ``isclose``: the refactor was supposed to move code, not numbers, and any
+#: drift at all is a defect rather than a tolerance question.  The cases span
+#: the paths a refactor could plausibly disturb -- the aperture test, the
+#: misaligned secondary frame, the solver's non-convergence path, and a
+#: non-unity prescription.
+#:
+#: ``xsum`` is the sum of surviving x. Half-power diameter is a spread about
+#: a centroid, so it survives a reordering or a swap of which rays lived;
+#: the raw sum does not, which is what makes it worth carrying.
+_PARITY = (
+    ('on axis', dict(num_rays=4000, seed=1),
+     dict(hpd_arcsec=0.0006415432391093105,
+          rms_arcsec=0.00040951888183856185,
+          focus_z=-9.45246392802801e-06,
+          num_surviving=4000, num_nonconverged=0, num_nonfinite=0,
+          xsum=-0.0009697033638054603)),
+    ('off axis with azimuth',
+     dict(azimuth=35.0, num_rays=4000, offaxis=3.0, seed=2),
+     dict(hpd_arcsec=0.08371271685125067,
+          rms_arcsec=0.058741264780416386,
+          focus_z=0.21336970392803778,
+          num_surviving=1809, num_nonconverged=0, num_nonfinite=0,
+          xsum=10865.16245512421)),
+    ('heavy misalignment',
+     dict(num_rays=4000, offaxis=1.0, sec_dy=0.2, sec_rx=0.7, sec_rz=0.3,
+          seed=3),
+     dict(hpd_arcsec=12.002628664737362,
+          rms_arcsec=7.760205133426471,
+          focus_z=-0.9482342311421235,
+          num_surviving=427, num_nonconverged=0, num_nonfinite=0,
+          xsum=1096.1715462728944)),
+    ('non-convergence', dict(num_rays=2000, r0=5.0, seed=4),
+     dict(hpd_arcsec=1.2045795918739144e-05,
+          rms_arcsec=8.261874496175472e-06,
+          focus_z=1.9832683392451145e-05,
+          num_surviving=145, num_nonconverged=1855, num_nonfinite=0,
+          xsum=4.764346686933485e-06)),
+    ('non-unity psi',
+     dict(num_rays=4000, primary_length=180.0, psi=1.6,
+          secondary_length=60.0, seed=5),
+     dict(hpd_arcsec=0.0006315763057937328,
+          rms_arcsec=0.0004067524193333303,
+          focus_z=-4.472800355870277e-06,
+          num_surviving=806, num_nonconverged=0, num_nonfinite=0,
+          xsum=-0.00017864554690899537)),
+)
+
+
+def test_trace_is_byte_identical_to_the_flat_pipeline():
+    """
+    Generalising the tracer changed no numbers. Not one bit of one number.
+
+    This is the spine of the element refactor and stays useful well past it:
+    every later change -- nested shells, gratings, a placed detector -- must
+    leave a plain single-shell Wolter-I exactly where it found it.
+    """
+    from PyXFocus.gui.wolter import WolterParams, trace
+    for name, kwargs, want in _PARITY:
+        result = trace(WolterParams(**kwargs))
+        got = dict(hpd_arcsec=result.hpd_arcsec,
+                   rms_arcsec=result.rms_arcsec,
+                   focus_z=result.focus_z,
+                   num_surviving=result.num_surviving,
+                   num_nonconverged=result.num_nonconverged,
+                   num_nonfinite=result.num_nonfinite,
+                   xsum=float(np.sum(result.rays[1])))
+        for key in sorted(want):
+            assert got[key] == want[key], (
+                '%s: %s drifted, %r != %r' % (name, key, got[key], want[key]))
+
+
+def test_ray_ids_stay_aligned_with_rays():
+    """
+    A beam's ids and its rays are cut together, always.
+
+    `tran.vignette` returns a new list rather than editing in place, so the
+    old pipeline re-indexed a parallel id array by hand at four separate
+    sites.  Beam.cut is now the only way rays leave a beam; this is what
+    says so.
+    """
+    from PyXFocus.gui import optics
+    from PyXFocus.gui.wolter import WolterParams, build_system
+
+    params = WolterParams(offaxis=4., num_rays=3000, seed=7)
+    system = build_system(params)
+    channel = system.channels[0]
+    beam = channel.source.launch()
+    assert len(beam.ids) == len(beam)
+    for element in channel.elements:
+        element.apply(beam, record=False)
+        assert len(beam.ids) == len(beam), (
+            '%s left %d ids for %d rays'
+            % (element.key, len(beam.ids), len(beam)))
+        assert np.all(np.diff(beam.ids) > 0), 'ids must stay sorted, unique'
+    assert isinstance(beam, optics.Beam)
+
+
+def test_paths_are_recorded_in_global_coordinates():
+    """
+    Every drawn stage is in global mm, the focal plane included.
+
+    `surf.focusI` moves the coordinate *frame*, so at the last stage every
+    ray sits at local z = 0.  The old pipeline corrected for that afterwards
+    with a `zs[-1] += focus_z` line; the terminal element now carries its own
+    placement and the correction falls out.  The failure mode is quiet -- the
+    last leg would land at z=0, which looks very nearly right -- so assert it.
+    """
+    from PyXFocus.gui.wolter import WolterParams, trace
+    params = WolterParams(offaxis=2., num_rays=3000, seed=11)
+    result = trace(params)
+
+    assert np.all(result.path_z[-1] == result.focus_z), (
+        'the focal-plane stage is not in global z')
+    assert np.all(result.path_z[1] > params.z0), 'primary hits below z0'
+    assert np.all(result.path_z[1] < params.z0 + params.primary_length)
+    assert np.all(np.diff(result.path_ids) > 0), 'path ids must be sorted'
+    assert np.all(np.in1d(result.path_ids, result.ray_ids)), (
+        'a drawn path belongs to a ray that did not survive')
+
+
+def test_placement_round_trips_a_point():
+    """
+    to_global inverts tran.transform, rotations and all.
+
+    Drawing a misaligned optic depends on this: the element generates its
+    geometry in its own frame and the viewer needs it in the telescope's.
+    """
+    import PyXFocus.transformations as tran
+    from PyXFocus.gui import optics
+
+    place = optics.Placement(1.5, -2.25, 3.75, 0.004, -0.007, 0.011)
+    x = np.array([0., 10., -30., 220.])
+    y = np.array([5., -1., 12., 0.])
+    z = np.array([8400., 8500., 8300., 8400.])
+
+    # Put a ray list at these points, move the frame, and read the local
+    # coordinates back out -- that is the map to_global has to invert.
+    rays = [np.zeros(len(x)), x.copy(), y.copy(), z.copy(),
+            np.zeros(len(x)), np.zeros(len(x)), -np.ones(len(x)),
+            np.zeros(len(x)), np.zeros(len(x)), np.ones(len(x))]
+    tran.transform(rays, *place)
+    back = optics.to_global(rays[1], rays[2], rays[3], place)
+
+    for got, want, axis in zip(back, (x, y, z), 'xyz'):
+        assert np.allclose(got, want, atol=1e-9), (
+            '%s did not round trip: %r' % (axis, got - want))
+
+
+def test_pure_translation_round_trips_exactly():
+    """
+    A translation-only placement is exact, not merely close.
+
+    The focal plane is placed this way, and the parity table above compares
+    path coordinates with ==. A 4x4 dot product that happens to equal x + dx
+    is not good enough; to_global takes a fast path so that it truly is.
+    """
+    from PyXFocus.gui import optics
+    place = optics.Placement(0., 0., -0.9482342311421235, 0., 0., 0.)
+    z = np.array([0., 1e-9, -3.25, 8400.123456789])
+    _, _, got = optics.to_global(np.zeros(4), np.zeros(4), z, place)
+    assert np.all(got == z + place.dz), 'translation is not exact'
+
+
+def test_the_system_knows_where_its_optics_are():
+    """
+    mirror_z_range replaces the layout tab's hard-coded z0 +/- length.
+
+    A viewer should be able to zoom on "the optics" without knowing that the
+    optics are two Wolter mirrors.
+    """
+    from PyXFocus.gui.wolter import WolterParams, build_system
+    params = WolterParams(primary_length=120., secondary_length=80.)
+    zlo, zhi = build_system(params).mirror_z_range()
+    assert zlo == params.z0 - params.secondary_length
+    assert zhi == params.z0 + params.primary_length
+
+
+def test_zeroth_order_is_the_system_without_a_grating():
+    """
+    Order zero must not disperse. It is the control for every test below.
+
+    Not compared bit-for-bit against a gratingless trace: the rays take a
+    detour to the grating plane and back, so the focus solve sees different
+    rounding. Sub-milliarcsecond on an 8.4 m telescope is zero.
+    """
+    from PyXFocus.gui.wolter import WolterParams, trace
+    result = trace(WolterParams(num_rays=3000, seed=1, use_grating=1,
+                                grating_order=0))
+    assert not result.message, result.message
+    assert result.hpd_arcsec < 0.01, result.hpd_arcsec
+    assert abs(np.mean(result.rays[1])) < 1e-3, 'order zero moved the spot'
+
+
+def test_a_grating_disperses_by_order_times_wavelength():
+    """
+    The grating equation, measured: sin(beta) = m * lambda / d.
+
+    Grooves run along +y, so dispersion is along x. The lever arm is the
+    grating's height above the focus, which makes the predicted displacement
+    a number this test can check outright rather than a trend.
+    """
+    from PyXFocus.gui.wolter import WolterParams, trace
+
+    def centroid_x(**kwargs):
+        result = trace(WolterParams(num_rays=3000, seed=1, use_grating=1,
+                                    **kwargs))
+        assert not result.message, result.message
+        return float(np.mean(result.rays[1])), float(np.mean(result.rays[2]))
+
+    params = WolterParams()
+    lever = params.grating_z
+    period = params.grating_period
+
+    for order, wave in ((1, 2.), (2, 2.), (1, 4.), (-1, 2.)):
+        x, y = centroid_x(grating_order=order, wavelength=wave)
+        # sin(beta) = m*lambda/d, and the beam travels `lever` mm to the
+        # image. Small angles here: m*lambda/d is 0.01 at most.
+        expected = -lever * order * wave / period
+        assert abs(x - expected) < 0.05 * abs(expected) + 0.01, (
+            'order %+d at %g nm landed at x=%.4f, expected %.4f'
+            % (order, wave, x, expected))
+        assert abs(y) < 0.01, 'grooves run along y; dispersion must not'
+
+    # Order times wavelength is the only thing that matters.
+    assert np.isclose(centroid_x(grating_order=2, wavelength=2.)[0],
+                      centroid_x(grating_order=1, wavelength=4.)[0],
+                      rtol=1e-3), 'm*lambda is not the dispersion variable'
+
+
+def test_rays_missing_the_grating_are_reported():
+    """A grating too small to catch the beam says so rather than crashing."""
+    from PyXFocus.gui.wolter import WolterParams, trace
+    result = trace(WolterParams(num_rays=2000, seed=1, use_grating=1,
+                                grating_size=2.))
+    assert result.num_surviving == 0
+    assert 'grating' in result.message, result.message
+
+
+def test_an_impossible_grating_is_refused_before_it_traces():
+    """A non-positive period is caught by the element's own check."""
+    from PyXFocus.gui.wolter import WolterParams, trace
+    try:
+        trace(WolterParams(num_rays=500, use_grating=1, grating_period=0.))
+    except ValueError as err:
+        assert 'period' in str(err), str(err)
+    else:
+        raise AssertionError('expected ValueError for a zero groove period')
+
+
+def test_a_placed_detector_measures_defocus():
+    """
+    Defocus becomes a number instead of being absorbed by the autofocus.
+
+    The blur of a converging beam moved dz off focus is 2*dz*r0/z0 across,
+    which is what makes this checkable rather than merely monotonic.
+    """
+    from PyXFocus.gui.wolter import WolterParams, trace
+
+    sharp = trace(WolterParams(num_rays=3000, seed=1, use_detector=1))
+    assert sharp.hpd_arcsec < 0.01, (
+        'a detector at nominal focus should be sharp: %r' % sharp.hpd_arcsec)
+
+    params = WolterParams(num_rays=3000, seed=1, use_detector=1, det_z=10.)
+    blurred = trace(params)
+    assert blurred.focus_z == 10., blurred.focus_z
+    expected = (2. * params.det_z * params.r0 / params.z0
+                / (params.z0 - params.det_z) * 180. / np.pi * 3600.)
+    assert abs(blurred.hpd_arcsec - expected) < 0.15 * expected, (
+        'defocus blur is %.3f arcsec, expected about %.3f'
+        % (blurred.hpd_arcsec, expected))
+
+
+def test_the_arcsecond_scale_follows_the_detector():
+    """
+    Angles are measured against node-to-image, not node-to-origin.
+
+    The two are the same only while the image plane sits at the origin, and
+    a placed detector is precisely the case where they part company.
+    """
+    from PyXFocus.gui.wolter import WolterParams, build_system
+
+    params = WolterParams(use_detector=1, det_z=25.)
+    assert build_system(params).focal_length == params.z0 - 25.
+    assert build_system(WolterParams()).focal_length == WolterParams().z0
+
+
+def test_defaults_fit_no_grating_and_no_detector():
+    """
+    The optional parts are off by default, so nothing above changed anyone.
+
+    The parity table would catch a change in the numbers; this catches the
+    subtler version where a default flips and the numbers happen to match.
+    """
+    from PyXFocus.gui.wolter import WolterParams, build_system
+    from PyXFocus.gui import optics
+    system = build_system(WolterParams())
+    assert system.common == [], 'a grating is fitted by default'
+    assert isinstance(system.terminator, optics.AutoFocus), (
+        'the default terminator is no longer the autofocus')
+
+
+def test_nested_shells_add_collecting_area():
+    """
+    More shells collect more, without blurring the image or costing time.
+
+    Throughput and area must grow; on-axis resolution must not degrade,
+    because every shell shares one focus. The ray budget is fixed across the
+    nest, so a design with twenty shells costs what one shell costs.
+    """
+    from PyXFocus.gui.wolter import WolterParams, trace
+
+    areas, hpds = [], []
+    for shells in (1, 2, 3, 5):
+        result = trace(WolterParams(num_shells=shells, num_rays=6000, seed=5))
+        assert result.num_launched == 6000, (
+            '%d shells launched %d rays, not the budgeted 6000'
+            % (shells, result.num_launched))
+        assert not result.message, result.message
+        areas.append(result.collecting_area)
+        hpds.append(result.hpd_arcsec)
+
+    assert areas == sorted(areas) and areas[0] < areas[-1], (
+        'collecting area did not grow with shell count: %r' % areas)
+    assert max(hpds) < 0.01, (
+        'nesting blurred the on-axis focus: %r arcsec' % hpds)
+
+
+def test_shells_are_close_packed():
+    """Each shell starts exactly one wall thickness outside the last."""
+    from PyXFocus.gui.wolter import WolterParams, shell_radii, shell_radii_all
+
+    params = WolterParams(num_shells=6, shell_gap=2.5)
+    radii = shell_radii_all(params)
+    assert len(radii) == 6
+    for k in range(5):
+        _, outer = shell_radii(params, radii[k])
+        inner, _ = shell_radii(params, radii[k + 1])
+        assert abs((inner - outer) - params.shell_gap) < 1e-9, (
+            'shell %d to %d gap is %r, not %r'
+            % (k, k + 1, inner - outer, params.shell_gap))
+
+
+def test_ray_ids_are_unique_across_shells():
+    """
+    Channels hold disjoint, increasing id blocks.
+
+    Everything that reconstructs a ray path uses searchsorted, so ids that
+    repeat or run backwards across shells would silently join one shell's
+    launch point to another shell's mirror hit.
+    """
+    from PyXFocus.gui.wolter import WolterParams, trace
+    result = trace(WolterParams(num_shells=4, num_rays=4000, seed=2))
+    assert len(set(result.ray_ids.tolist())) == len(result.ray_ids), (
+        'ray ids repeat across shells')
+    assert np.all(np.diff(result.ray_ids) > 0), 'ray ids are not sorted'
+    assert np.all(np.diff(result.path_ids) > 0), 'path ids are not sorted'
+
+
+def test_adding_a_shell_leaves_the_inner_shells_alone():
+    """
+    Seeding per shell, so a comparison between designs means something.
+
+    With one global seed, adding an outer shell reshuffles every inner
+    shell's ray pattern, and the resulting change in the metrics is partly
+    sampling noise rather than optics.
+    """
+    from PyXFocus.gui.wolter import WolterParams, build_system
+
+    one = build_system(WolterParams(num_shells=1, num_rays=2000, seed=9))
+    two = build_system(WolterParams(num_shells=2, num_rays=2000, seed=9))
+    assert two.channels[0].source.seed == one.channels[0].source.seed, (
+        'the innermost shell changed seed when a shell was added')
+
+
+def test_one_shell_is_unchanged_by_the_nesting_code():
+    """The default design is bit-for-bit what it was before nesting."""
+    from PyXFocus.gui.wolter import WolterParams, trace
+    for name, kwargs, want in _PARITY:
+        result = trace(WolterParams(num_shells=1, **kwargs))
+        assert result.hpd_arcsec == want['hpd_arcsec'], name
+        assert result.num_surviving == want['num_surviving'], name
+
+
+def test_a_degenerate_shell_is_warned_about_not_raised():
+    """
+    One impossible shell must not take the rest of the design with it.
+
+    A ray budget smaller than the shell count leaves the outermost shells
+    with nothing to trace; that is worth saying out loud, and worth not
+    crashing over.
+    """
+    from PyXFocus.gui.wolter import WolterParams, trace
+    result = trace(WolterParams(num_shells=8, num_rays=4, seed=1))
+    assert result.warnings, 'starved shells produced no warning'
+    assert any('rays' in w for w in result.warnings), result.warnings
+
+
+def test_config_version_2_reads_a_version_1_file():
+    """
+    A configuration written before nesting opens as a single shell.
+
+    One note, not two "missing; using default" complaints -- a file that
+    predates a field is not a damaged file.
+    """
+    import json
+    from PyXFocus.gui import config, wolter
+
+    params = wolter.WolterParams()
+    fields = dict(params.to_dict())
+    del fields['num_shells']
+    del fields['shell_gap']
+    text = json.dumps({'format': config.FORMAT, 'version': 1,
+                       'parameters': fields})
+
+    loaded = config.load_config_text(text)
+    assert loaded.version == 1, loaded.version
+    assert loaded.params.num_shells == 1, loaded.params.num_shells
+    assert loaded.params.shell_gap == 1., loaded.params.shell_gap
+    assert any('predates nested shells' in p for p in loaded.problems), (
+        loaded.problems)
+    assert not any('num_shells missing' in p for p in loaded.problems), (
+        loaded.problems)
+
+
+def test_mirror_profiles_cover_the_whole_nest():
+    """
+    The profile list is per shell, and a single shell is the old picture.
+
+    The 2D layout draws this list, so a one-element list whose entry equals
+    mirror_profile is what keeps an unnested design looking identical.
+    """
+    from PyXFocus.gui.wolter import WolterParams, mirror_profile, mirror_profiles
+
+    single = WolterParams()
+    profiles = mirror_profiles(single)
+    assert len(profiles) == 1
+    (zp, rp), (zs, rs) = profiles[0]
+    (wzp, wrp), (wzs, wrs) = mirror_profile(single)
+    for got, want in ((zp, wzp), (rp, wrp), (zs, wzs), (rs, wrs)):
+        assert np.array_equal(got, want), 'a single shell changed shape'
+
+    nest = mirror_profiles(WolterParams(num_shells=5, shell_gap=3.))
+    assert len(nest) == 5
+    radii = [float(np.min(rp)) for (_, rp), _ in nest]
+    assert radii == sorted(radii) and radii[0] < radii[-1], (
+        'shells are not nested outward: %r' % radii)
+
+
+def test_mirror_profile_is_unchanged():
+    """
+    Routing the profile through the elements moved no points.
+
+    Compared against the literal expressions the function used to contain,
+    with array_equal rather than allclose: this was a refactor.
+    """
+    import PyXFocus.conicsolve as conic
+    from PyXFocus.gui.wolter import WolterParams, mirror_profile
+
+    for kwargs in (dict(), dict(psi=1.6, primary_length=180.,
+                                secondary_length=60., r0=95., z0=6000.)):
+        p = WolterParams(**kwargs)
+        (zp, rp), (zs, rs) = mirror_profile(p)
+        want_zp = np.linspace(p.z0, p.z0 + p.primary_length, 200)
+        want_zs = np.linspace(p.z0 - p.secondary_length, p.z0, 200)
+        assert np.array_equal(zp, want_zp), 'primary z moved'
+        assert np.array_equal(zs, want_zs), 'secondary z moved'
+        assert np.array_equal(
+            rp, conic.primrad(want_zp, p.r0, p.z0, psi=p.psi)), 'primary r moved'
+        assert np.array_equal(
+            rs, conic.secrad(want_zs, p.r0, p.z0, psi=p.psi)), 'secondary r moved'
+
+
+def test_patch_meridian_matches_profile():
+    """
+    The 3D mesh and the 2D profile are the same curve.
+
+    A patch is the profile swept about z, so the phi=0 column of the mesh
+    must reproduce the profile exactly. This is the assertion that stops a
+    2D and a 3D view growing two different ideas of where a mirror is.
+    """
+    from PyXFocus.gui.wolter import WolterParams, WolterPrimary, WolterSecondary
+
+    params = WolterParams(psi=1.3)
+    for element in (WolterPrimary(params), WolterSecondary(params)):
+        (z, r), = element.profile(37)
+        patch, = element.patches(n_azimuth=16, num=37)
+        assert patch.x.shape == (37, 16), patch.x.shape
+        # phi starts at 0, so column 0 is the +x meridian.
+        assert np.allclose(np.hypot(patch.x[:, 0], patch.y[:, 0]), r), (
+            '%s mesh radius disagrees with its profile' % element.key)
+        assert np.allclose(patch.z[:, 0], z), (
+            '%s mesh z disagrees with its profile' % element.key)
+        assert np.allclose(np.hypot(patch.x, patch.y),
+                           np.repeat(r[:, None], 16, axis=1)), (
+            '%s is not a surface of revolution' % element.key)
+
+
+def test_patches_honour_misalignment():
+    """
+    A tilted secondary draws tilted.
+
+    ``mirror_profile`` never could show this -- it returned the nominal
+    prescription and ignored the misalignment entirely -- which is precisely
+    the gap a 3D view exists to close. At zero misalignment the geometry must
+    still be exactly nominal, so the mechanism cannot perturb an aligned
+    design.
+    """
+    from PyXFocus.gui.wolter import WolterParams, WolterSecondary
+
+    nominal, = WolterSecondary(WolterParams()).patches(n_azimuth=24, num=12)
+
+    same, = WolterSecondary(WolterParams(sec_rx=0., sec_dy=0.)).patches(
+        n_azimuth=24, num=12)
+    assert np.array_equal(same.z, nominal.z), 'an aligned optic moved'
+    assert np.array_equal(same.x, nominal.x), 'an aligned optic moved'
+
+    tilted, = WolterSecondary(WolterParams(sec_rx=5.)).patches(
+        n_azimuth=24, num=12)
+    assert not np.allclose(tilted.z, nominal.z), (
+        'a 5 arcmin tilt left the drawn geometry unchanged')
+    # A tilt about x swings the mirror in y and z, and the y extremes move
+    # furthest in z. The spread across azimuth is the visible signature.
+    spread = (tilted.z.max(axis=1) - tilted.z.min(axis=1)).max()
+    assert spread > 1e-3, 'tilt produced no azimuthal z spread: %r' % spread
+
+    shifted, = WolterSecondary(WolterParams(sec_dy=2.)).patches(
+        n_azimuth=24, num=12)
+    assert np.allclose(shifted.y - nominal.y, 2.), (
+        'a 2 mm decentre did not move the drawn geometry by 2 mm')
+
+
+def test_patch_vertex_budget():
+    """
+    A system's mesh stays small enough to rotate interactively.
+
+    mplot3d re-projects every vertex on every mouse move, so this is a
+    performance contract, not a style note.
+    """
+    from PyXFocus.gui.wolter import WolterParams, build_system
+    patches = build_system(WolterParams()).patches(n_azimuth=32, num=8)
+    total = sum(p.x.size for p in patches)
+    assert total <= 20000, 'mesh is %d vertices' % total
+    assert total > 0, 'a Wolter system drew nothing'
+
+
+def test_styles_carry_no_matplotlib_objects():
+    """
+    Geometry is generated Qt-free and matplotlib-free.
+
+    Styling crosses the boundary as plain strings and floats so that meshes
+    can be built, and tested, with no GUI anywhere near them.
+    """
+    from PyXFocus.gui import optics
+    for kind, style in optics.STYLES.items():
+        for key, value in style.items():
+            assert isinstance(value, (str, float, int)), (
+                '%s.%s is a %s' % (kind, key, type(value).__name__))
+
+
+def test_a_degenerate_aperture_is_reported_not_raised():
+    """An impossible shell explains itself instead of throwing."""
+    from PyXFocus.gui.wolter import WolterParams, trace
+    result = trace(WolterParams(psi=0.1, r0=1., z0=100000.))
+    if result.num_surviving == 0:
+        assert result.message, 'an empty trace must say why'
 
 
 def test_reproducible():

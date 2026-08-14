@@ -52,7 +52,7 @@ from PyXFocus.gui import wolter
 FORMAT = 'pyxfocus-wolter-config'
 
 #: The version this build writes.
-VERSION = 1
+VERSION = 2
 
 #: The oldest version this build can still read.
 OLDEST = 1
@@ -209,25 +209,38 @@ def save_config(params, path, ui=None, problems=None):
 # Reading
 # --------------------------------------------------------------------------
 
+def _migrate_1_to_2(payload, problems):
+    """
+    Version 1 predates nested shells, so a version 1 design is one shell.
+
+    Without this every configuration written before nesting existed would
+    open with two "missing; using default" notes, which is technically
+    accurate and reads like the file is damaged.
+    """
+    # Migrate what is there; never conjure a parameters block. A file with
+    # none is an error the loader must still be able to raise, and a
+    # migration that helpfully invents one would turn that into a silent
+    # load of all-defaults -- the exact misread this module exists to stop.
+    params = payload.get('parameters')
+    if not isinstance(params, dict):
+        return payload
+    params.setdefault('num_shells', 1)
+    params.setdefault('shell_gap', 1.)
+    problems.append('this configuration predates nested shells; '
+                    'reading it as a single shell')
+    return payload
+
+
 #: Migration table: version N -> a function returning a payload at N+1.
 #:
-#: Empty today; version 1 is the only version there has ever been. A future
-#: hop goes here, one entry per step, so a version 1 file still opens after
-#: five format changes without anyone writing a 1->6 case::
-#:
-#:     def _migrate_1_to_2(payload, problems):
-#:         payload['parameters'].setdefault('coating', 'none')
-#:         problems.append('version 1 predates the coating field; '
-#:                         'assuming none')
-#:         return payload
-#:
-#:     _MIGRATIONS = {1: _migrate_1_to_2}
+#: One entry per step, so a version 1 file still opens after five format
+#: changes without anyone writing a 1->6 case.
 #:
 #: A version with nothing to do still needs an entry -- an identity function
 #: with a comment saying why -- because
 #: test_config_every_past_version_has_a_migration refuses to let the table
 #: develop gaps. The runtime is forgiving; the test suite is not.
-_MIGRATIONS = {}
+_MIGRATIONS = {1: _migrate_1_to_2}
 
 
 def _read_version(payload, problems):
@@ -269,6 +282,20 @@ def _migrate(payload, version, problems):
         payload = step(payload, problems)
         version += 1
     return payload
+
+
+def migrate_parameters(data, version, problems):
+    """
+    Run a bare ``parameters`` block through the file migrations.
+
+    A remembered session is the same parameter block a file carries, so it
+    deserves the same treatment.  Wraps it as a payload, migrates, unwraps --
+    which keeps the migration functions written once, against the shape they
+    already know, rather than in two subtly different flavours.
+    """
+    payload = _migrate({'parameters': data}, version, problems)
+    migrated = payload.get('parameters', data)
+    return migrated if isinstance(migrated, dict) else data
 
 
 def check_ranges(params, problems):

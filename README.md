@@ -123,9 +123,10 @@ you if it has gone stale. If it fails to start, the failure shows up as a
 dialog rather than a bounced Dock icon, and the details land in
 `~/Library/Logs/PyXFocus.log`.
 
-Set the shell radius, focal length, mirror lengths, source off-axis angle and
-secondary misalignment in the left-hand panel. The trace re-runs
-automatically and reports:
+Set the shell radius, focal length, mirror lengths, shell count, source
+off-axis angle and secondary misalignment in the left-hand panel. The
+**Grating** and **Detector** groups are optional — tick the group to fit that
+part. The trace re-runs automatically and reports:
 
 * **Spot Diagram** — the focal-plane spot, in arcseconds, with the
   half-power diameter circled.
@@ -134,9 +135,65 @@ automatically and reports:
   but only ~20 cm in radius, so the mirrors need their own scale).
 * **Encircled Energy** — enclosed fraction vs. radius from the centroid.
 * **Parameter Sweep** — vary one parameter and plot how performance responds.
+* **3D Layout** — the same system rotatable, which is the view that shows
+  azimuth, decentre and tilt. A profile plot cannot: a secondary tilted by
+  5 arcmin looks, in profile, exactly like a secondary.
 
 Alongside: HPD and RMS radius in arcseconds, surviving ray count, throughput,
 collecting area, and the best-focus position.
+
+### Reading the 3D view
+
+Two controls, both there for a reason worth knowing:
+
+* **Mirrors only** zooms from the whole 8 m system to the 20 cm of optics.
+  Away from that zoom the z axis is compressed, and the axis label says by
+  how much — an unlabelled 38:1 squash makes a Wolter-I look like a
+  Cassegrain.
+* **Solid half-shells** shades the mirrors instead of drawing them as
+  wireframes, and deliberately draws only half of each shell so the rays
+  inside stay visible. matplotlib's 3D axes depth-sort each surface as a
+  single unit, so a closed opaque shell would swallow its own rays,
+  differently at every camera angle.
+
+x and y are always to the same scale. Only z is ever compressed, because
+azimuth, tilt and decentre all live in the x–y plane and that is the whole
+reason for the view.
+
+### Nested shells
+
+`Number of shells` close-packs concentric shells outward from `r₀`, each one
+starting `Shell wall + gap` outside the last. Collecting area grows with the
+nest while on-axis resolution does not degrade, since every shell shares one
+focus.
+
+The ray budget is the *total* across the nest, split between shells by
+collecting area, so a twenty-shell design costs about what one shell costs
+(≈20 ms) and the spot keeps a constant number of points. Adding an outer
+shell therefore changes the image because of optics, not because of
+sampling — each shell is seeded independently so the inner shells' ray
+patterns do not reshuffle when you add another.
+
+Rays are not traced between shells. Each shell is an independent bundle;
+modelling a ray that leaves one shell and strikes its neighbour would need a
+branching tracer.
+
+### Gratings and a placed detector
+
+The **Grating** group puts a linear diffraction grating in the converging
+beam at a given height above the focus, with its own groove period, order,
+wavelength and half-width. Grooves run along y, so dispersion is along x, and
+order 0 reproduces the system without it. Rays outside the grating are
+vignetted, and evanescent orders are counted as lost rather than silently
+turning the focus into NaN.
+
+The **Detector** group replaces "find best focus from the rays" with "put the
+image plane where the design says". Defocus and detector tilt then show up in
+the spot and the HPD as real degradations — an autofocus quietly absorbs
+both. Arcsecond conversions follow the detector: the lever arm is node to
+image plane, which stops being `z₀` as soon as the detector moves.
+
+Sweeping `det_z` over a few millimetres is a through-focus scan.
 
 ### Parameter sweep (tolerancing)
 
@@ -279,8 +336,10 @@ print('HPD [arcsec]:', anal.hpd(rays) / z0 * 180 / np.pi * 3600)
 | `analyses.py` | Centroid, RMS, HPD, wavefront and OPD fitting |
 | `conicsolve.py` | Wolter-I prescription maths (radii, focus, sag) |
 | `lenses.py` | Singlet and doublet lenses |
-| `gui/wolter.py` | One-call Wolter-I trace, plus parameter sweeps |
+| `gui/optics.py` | Optical systems as lists of elements, and the tracer that walks them |
+| `gui/wolter.py` | Wolter-I expressed in those elements, plus parameter sweeps |
 | `gui/app.py` | PyQt5 Wolter-I Explorer |
+| `gui/tabs/` | One module per plot tab, registered in `tabs/__init__.py` |
 | `build_extensions.py` | Compiles the Fortran extensions |
 | `test_smoke.py` | Import and physics checks (no Qt) |
 | `test_gui_smoke.py` | Settings persistence and window restore (needs PyQt5) |
@@ -289,6 +348,31 @@ print('HPD [arcsec]:', anal.hpd(rays) / z0 * 180 / np.pi * 3600)
 | `gui/icon.py` | The app icon, drawn programmatically |
 | `tools/make_icon.py` | Builds `resources/PyXFocus.icns` |
 | `tools/make_launcher.py` | Builds the double-clickable macOS `.app` |
+
+### Adding an optic
+
+`gui/optics.py` holds the general form: an optical system is an ordered list
+of elements, and an element answers to exactly two audiences.
+
+* `trace_system` applies it — `trace_to` (the surface call), `placement`,
+  `aperture`, `terminal`.
+* A viewer draws it — `profile()` for a 2D view, `patches()` for a 3D one,
+  and `kind` so the viewer can style it without knowing what it is.
+
+Everything about pushing and popping coordinate frames, cutting vignetted
+rays and keeping ray identities aligned lives in `Element.apply`, so a new
+element cannot get that wrong. A surface of revolution needs only a
+`radius_at(z)`; both its profile and its 3D mesh follow from it, which is what
+keeps the 2D and 3D views from growing two different ideas of where a mirror
+is.
+
+`surfaces.py` already ships Wolter–Schwarzschild, silicon pore optics,
+ellipsoid–hyperboloid, general conics, paraxial lenses and flats, none of
+which the GUI reaches yet. Each is an element class away.
+
+`wolter.build_system` is the only code that knows what a `WolterParams` is.
+Anything that can produce a `System` — a different telescope family, or a
+per-element editor — needs no change to the tracer.
 
 ### A note on `examples/`
 

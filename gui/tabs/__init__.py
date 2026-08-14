@@ -18,7 +18,7 @@ matplotlib.use('Qt5Agg')
 
 from PyQt5 import QtWidgets
 
-from PyXFocus.gui.tabs import energy, layout, spot, sweep
+from PyXFocus.gui.tabs import energy, layout, layout3d, spot, sweep
 
 
 TabSpec = collections.namedtuple('TabSpec', 'key title widget needs_params')
@@ -61,6 +61,7 @@ TABS = (
     TabSpec('layout', 'Telescope Layout', layout.LayoutTab, False),
     TabSpec('energy', 'Encircled Energy', energy.EnergyTab, False),
     TabSpec('sweep', 'Parameter Sweep', sweep.SweepTab, True),
+    TabSpec('layout3d', '3D Layout', layout3d.Layout3DTab, False),
 )
 
 

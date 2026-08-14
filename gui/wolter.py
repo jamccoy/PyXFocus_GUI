@@ -24,11 +24,11 @@ import math
 
 import numpy as np
 
-import PyXFocus.analyses as anal
 import PyXFocus.conicsolve as conic
 import PyXFocus.sources as sources
 import PyXFocus.surfaces as surf
 import PyXFocus.transformations as tran
+import PyXFocus.gui.optics as optics
 
 #: Radians per arcminute, and arcseconds per radian.
 _ARCMIN = np.pi / (180. * 60.)
@@ -93,23 +93,51 @@ class WolterParams(object):
     azimuth : float
         Azimuth of the off-axis direction, in degrees.
     num_rays : int
-        Rays launched before vignetting.
+        Rays launched before vignetting, across the whole nest.
+    num_shells : int
+        Concentric shells, close-packed outward from ``r0``.
+    shell_gap : float
+        Radial wall thickness plus clearance between shells, in mm.
     sec_dx ... sec_rz : float
         Secondary mirror misalignment: translations in mm, rotations in
         arcminutes.
+    use_grating : int
+        Put a diffraction grating in the converging beam.
+    grating_z : float
+        Where it sits, in mm above the focus.
+    grating_period : float
+        Groove period in nm.
+    grating_order : int
+        Diffraction order. Zero reproduces the system without a grating.
+    wavelength : float
+        Wavelength in nm.
+    grating_size : float
+        Grating half-width in mm; rays outside it are vignetted.
+    use_detector : int
+        Put the image plane where the design says, instead of at best focus.
+    det_z : float
+        Detector position in mm; 0 is the nominal focus.
+    det_tilt : float
+        Detector tilt about x, in degrees.
     seed : int or None
         Seed for the random ray pattern, so a trace is repeatable.
     """
 
     def __init__(self, r0=220., z0=8400., primary_length=100.,
                  secondary_length=100., psi=1., offaxis=0., azimuth=0.,
-                 num_rays=20000, sec_dx=0., sec_dy=0., sec_dz=0.,
-                 sec_rx=0., sec_ry=0., sec_rz=0., seed=0):
+                 num_rays=20000, num_shells=1, shell_gap=1.,
+                 sec_dx=0., sec_dy=0., sec_dz=0.,
+                 sec_rx=0., sec_ry=0., sec_rz=0.,
+                 use_grating=0, grating_z=500., grating_period=200.,
+                 grating_order=1, wavelength=2., grating_size=120.,
+                 use_detector=0, det_z=0., det_tilt=0., seed=0):
         self.r0 = r0
         self.z0 = z0
         self.primary_length = primary_length
         self.secondary_length = secondary_length
         self.psi = psi
+        self.num_shells = num_shells
+        self.shell_gap = shell_gap
         self.offaxis = offaxis
         self.azimuth = azimuth
         self.num_rays = num_rays
@@ -119,6 +147,15 @@ class WolterParams(object):
         self.sec_rx = sec_rx
         self.sec_ry = sec_ry
         self.sec_rz = sec_rz
+        self.use_grating = use_grating
+        self.grating_z = grating_z
+        self.grating_period = grating_period
+        self.grating_order = grating_order
+        self.wavelength = wavelength
+        self.grating_size = grating_size
+        self.use_detector = use_detector
+        self.det_z = det_z
+        self.det_tilt = det_tilt
         self.seed = seed
 
     def misalignment(self):
@@ -148,7 +185,7 @@ class WolterParams(object):
             value = getattr(self, name)
             if name == 'seed' and value is None:
                 out[name] = None
-            elif name in _INT_FIELDS:
+            elif name in INT_FIELDS:
                 out[name] = int(value)
             else:
                 out[name] = float(value)
@@ -210,128 +247,250 @@ class WolterParams(object):
                 problems.append('%s is not finite (%r); using default'
                                 % (name, raw))
                 continue
-            setattr(params, name, int(value) if name in _INT_FIELDS else value)
+            setattr(params, name, int(value) if name in INT_FIELDS else value)
 
         return params
 
 
-class TraceResult(object):
-    """Rays at focus plus the numbers derived from them."""
-
-    def __init__(self, params):
-        self.params = params
-        self.rays = None
-        #: Ray positions at each stage, for the layout plot.
-        #: Ray paths through the system, shape (stage, ray), stages being
-        #: launch / primary / secondary / focus. path_z and path_r are what
-        #: the 2D layout draws; path_x and path_y are what 3D needs.
-        self.path_z = None
-        self.path_r = None
-        self.path_x = None
-        self.path_y = None
-        #: Launch index of each drawn path, and of each surviving ray, so a
-        #: path can be tied back to the ray it belongs to.
-        self.path_ids = None
-        self.ray_ids = None
-        #: Performance metrics.
-        self.hpd_arcsec = np.nan
-        self.rms_arcsec = np.nan
-        self.hpd_mm = np.nan
-        self.rms_mm = np.nan
-        self.focus_z = np.nan
-        self.num_launched = 0
-        self.num_surviving = 0
-        self.geometric_area = 0.
-        self.message = ''
-        #: Rays the Fortran surface solver gave up on, per surface.  These
-        #: are not geometric misses -- the solver hit its iteration cap and
-        #: marked the ray dead.  Counted before the mirror-extent test so
-        #: they are never mistaken for rays that simply missed.
-        self.nonconverged_primary = 0
-        self.nonconverged_secondary = 0
-        #: Rays dropped for carrying a non-finite coordinate.
-        self.num_nonfinite = 0
-        #: Human-readable caveats about the numbers below.
-        self.warnings = []
-
-    @property
-    def num_nonconverged(self):
-        """Total rays lost to solver non-convergence."""
-        return self.nonconverged_primary + self.nonconverged_secondary
-
-    @property
-    def metrics_are_bounds(self):
-        """
-        True when rays were lost to non-convergence rather than geometry.
-
-        Those rays are excluded from every metric, so throughput and
-        collecting area understate the real system: they are lower bounds,
-        not measurements.
-        """
-        return self.num_nonconverged > 0 or self.num_nonfinite > 0
-
-    @property
-    def throughput(self):
-        """
-        Fraction of launched rays that made it through both mirrors.
-
-        Rays the solver failed to converge on count as lost, so when
-        :attr:`metrics_are_bounds` is set this is a lower bound.
-        """
-        if self.num_launched == 0:
-            return 0.
-        return float(self.num_surviving) / self.num_launched
-
-    @property
-    def collecting_area(self):
-        """
-        Geometric aperture surviving vignetting, in cm^2.
-
-        This is *not* effective area.  It counts the entrance annulus that
-        makes it through both mirrors and nothing else -- there is no
-        mirror reflectivity in it, because PyXFocus ships no reflectivity
-        model.  A real Wolter-I loses roughly 10-20 per cent per bounce
-        with a good coating, twice, and far more as photon energy rises,
-        so treat this as a hard upper bound.
-
-        Turning it into a true effective area needs a coating reflectivity
-        table indexed by graze angle and energy; ``analyses.grazeAngle``
-        already supplies the per-ray graze angles.
-
-        Like :attr:`throughput`, this is a lower bound whenever
-        :attr:`metrics_are_bounds` is set.
-        """
-        return self.geometric_area * self.throughput
-
-    @property
-    def spot(self):
-        """Focal-plane (x, y) in mm, centred on the centroid."""
-        if self.rays is None or self.num_surviving == 0:
-            return np.array([]), np.array([])
-        x, y = self.rays[1], self.rays[2]
-        return x - np.mean(x), y - np.mean(y)
-
-    @property
-    def spot_arcsec(self):
-        """
-        The focal-plane spot in arcseconds, as the plots want it.
-
-        ``hpd_arcsec`` and :func:`encircled_energy` are already in
-        arcseconds; the spot was the one member of the family that was
-        not, which is why the GUI had to reach in here for a private
-        constant and divide by z0 itself.
-        """
-        x, y = self.spot
-        scale = _ARCSEC_PER_RAD / self.params.z0
-        return x * scale, y * scale
+#: Rays at focus plus the numbers derived from them.
+#:
+#: Lives in :mod:`PyXFocus.gui.optics` now, because nothing about it is
+#: Wolter-specific, and is re-exported here so that ``wolter.TraceResult``
+#: keeps meaning what it always did.
+TraceResult = optics.TraceResult
 
 
-def shell_radii(params):
+def shell_radii(params, r0=None):
     """Inner and outer radius of the primary entrance aperture, in mm."""
-    rin = conic.primrad(params.z0, params.r0, params.z0, psi=params.psi)
+    if r0 is None:
+        r0 = params.r0
+    rin = conic.primrad(params.z0, r0, params.z0, psi=params.psi)
     rout = conic.primrad(params.z0 + params.primary_length,
-                         params.r0, params.z0, psi=params.psi)
+                         r0, params.z0, psi=params.psi)
     return rin, rout
+
+
+class WolterSource(optics.Source):
+    """
+    The entrance annulus of one shell, illuminated from a given direction.
+
+    Rays start 500 mm above the top of the primary, travelling in -z.  The
+    off-axis direction is applied by setting the direction cosines outright
+    rather than by rotating the frame, so that the ray *positions* stay put
+    across the aperture and only the incoming angle changes.
+    """
+
+    def __init__(self, params, rin, rout, count, id_offset=0, seed=None):
+        self.params = params
+        self.rin = rin
+        self.rout = rout
+        self.count = int(count)
+        self.id_offset = id_offset
+        self.seed = seed
+
+    def emit(self):
+        params = self.params
+        if self.seed is not None:
+            np.random.seed(self.seed)
+        rays = sources.annulus(self.rin, self.rout, self.count)
+
+        start_z = params.z0 + params.primary_length + 500.
+        tran.transform(rays, 0, 0, -start_z, 0, 0, 0)
+
+        theta = params.offaxis * _ARCMIN
+        phi = np.radians(params.azimuth)
+        if theta != 0.:
+            n_rays = len(rays[1])
+            rays[4] = np.repeat(np.sin(theta) * np.cos(phi), n_rays)
+            rays[5] = np.repeat(np.sin(theta) * np.sin(phi), n_rays)
+            rays[6] = np.repeat(-np.cos(theta), n_rays)
+        return rays
+
+
+class WolterPrimary(optics.SurfaceOfRevolution):
+    """The paraboloid, spanning z0 -> z0 + primary_length."""
+
+    key = 'primary'
+    label = 'the primary'
+    miss_label = 'the primary mirror'
+    title = 'Primary'
+    kind = 'mirror'
+
+    def __init__(self, params, r0=None):
+        self.params = params
+        self.r0 = params.r0 if r0 is None else r0
+        self.zlo = params.z0
+        self.zhi = params.z0 + params.primary_length
+        self.aperture = optics.AxialExtent(self.zlo, self.zhi)
+
+    def trace_to(self, rays):
+        surf.wolterprimary(rays, self.r0, self.params.z0, psi=self.params.psi)
+
+    def radius_at(self, z):
+        return conic.primrad(z, self.r0, self.params.z0, psi=self.params.psi)
+
+
+class WolterSecondary(optics.SurfaceOfRevolution):
+    """
+    The hyperboloid, spanning z0 - secondary_length -> z0.
+
+    This is the element the misalignment knobs move.  Its aperture is tested
+    in the parent frame, after the placement is popped -- see
+    ``Element.extent_frame`` for why that is preserved rather than chosen.
+    """
+
+    key = 'secondary'
+    label = 'the secondary'
+    miss_label = 'the secondary mirror'
+    title = 'Secondary'
+    kind = 'secondary'
+
+    def __init__(self, params, r0=None):
+        self.params = params
+        self.r0 = params.r0 if r0 is None else r0
+        self.zlo = params.z0 - params.secondary_length
+        self.zhi = params.z0
+        self.aperture = optics.AxialExtent(self.zlo, self.zhi)
+        self.placement = optics.Placement(*params.misalignment())
+
+    def trace_to(self, rays):
+        surf.woltersecondary(rays, self.r0, self.params.z0,
+                             psi=self.params.psi)
+
+    def radius_at(self, z):
+        return conic.secrad(z, self.r0, self.params.z0, psi=self.params.psi)
+
+
+def shell_radii_all(params):
+    """
+    Node radius of every shell in the nest, close-packed outward from r0.
+
+    A shell's outer edge is its primary's radius at the top, so the next
+    shell starts there plus the wall thickness.  ``conic.primrad(z0, r0, z0)``
+    is exactly ``r0``, which is what makes this a forward recurrence rather
+    than a root-find: each shell is placed directly, not solved for.
+    """
+    count = max(1, int(getattr(params, 'num_shells', 1)))
+    gap = float(getattr(params, 'shell_gap', 1.))
+    out = []
+    r = params.r0
+    for _ in range(count):
+        out.append(r)
+        r = conic.primrad(params.z0 + params.primary_length, r, params.z0,
+                          psi=params.psi) + gap
+    return out
+
+
+def _split_rays(total, areas):
+    """
+    Divide ``total`` rays among shells in proportion to collecting area.
+
+    Largest remainder, so the parts sum to exactly ``total``.  Two reasons
+    the total is what is fixed, rather than the per-shell count: trace time
+    then does not grow with shell count, which matters behind a 250 ms
+    auto-trace debounce; and the spot keeps a constant number of points, so
+    adding a shell changes the image because of optics rather than because
+    of sampling.
+    """
+    total_area = float(sum(areas))
+    if total_area <= 0.:
+        return [0] * len(areas)
+    exact = [total * area / total_area for area in areas]
+    counts = [int(math.floor(value)) for value in exact]
+    short = total - sum(counts)
+    order = sorted(range(len(areas)),
+                   key=lambda i: exact[i] - counts[i], reverse=True)
+    for i in order[:short]:
+        counts[i] += 1
+    return counts
+
+
+def build_system(params):
+    """
+    Turn a :class:`WolterParams` into an :class:`optics.System`.
+
+    This is the only place that knows what a ``WolterParams`` *is*.  Panel,
+    configuration, sweeps and session persistence all keep talking in
+    parameters; :func:`optics.trace_system` only ever sees a system.  A future
+    per-element editor would emit a ``System`` directly and need no change to
+    the tracer at all -- that is the whole point of the split, so please do
+    not reintroduce a shortcut around it.
+
+    Each shell of a nest becomes one channel: its own entrance annulus, its
+    own pair of surfaces, and its own slice of the ray budget.  Rays do not
+    pass between shells, which is a real simplification -- a ray leaving one
+    shell and striking its neighbour needs a branching tracer -- and the
+    standard one at this level of modelling.
+
+    A degenerate aperture is reported on the system rather than raised, so
+    that one impossible shell does not take a whole design with it.
+    """
+    radii = shell_radii_all(params)
+
+    usable = []
+    notes = []
+    for index, r0 in enumerate(radii):
+        rin, rout = shell_radii(params, r0)
+        if not np.isfinite(rin) or not np.isfinite(rout) or rout <= rin:
+            notes.append('Shell %d (r0 = %.4g mm) has no aperture and was '
+                         'skipped.' % (index + 1, r0))
+            continue
+        usable.append((index, r0, rin, rout))
+
+    if not usable:
+        return optics.System(
+            [], optics.AutoFocus(), params.z0, 0., label='Wolter-I',
+            problem=('Invalid geometry: the primary has no aperture. '
+                     'Check r0, focal length and psi.'))
+
+    # Geometric aperture of each annulus, in cm^2.
+    areas = [np.pi * (rout ** 2 - rin ** 2) / 100.
+             for _, _, rin, rout in usable]
+    counts = _split_rays(int(params.num_rays), areas)
+
+    channels = []
+    offset = 0
+    for (index, r0, rin, rout), count in zip(usable, counts):
+        if count <= 0:
+            notes.append('Shell %d (r0 = %.4g mm) got no rays; raise the ray '
+                         'count.' % (index + 1, r0))
+            continue
+        # Seeding per shell, offset by its index, so that adding an outer
+        # shell leaves the inner shells' ray patterns exactly as they were --
+        # otherwise every comparison between two designs is contaminated by a
+        # reshuffle. Shell 0 keeps the bare seed, so one shell is unchanged.
+        seed = None if params.seed is None else params.seed + index
+        source = WolterSource(params, rin, rout, count, id_offset=offset,
+                              seed=seed)
+        channels.append(optics.Channel(source, [WolterPrimary(params, r0),
+                                                WolterSecondary(params, r0)]))
+        offset += count
+
+    common = []
+    if int(getattr(params, 'use_grating', 0)):
+        common.append(optics.LinearGrating(
+            optics.Placement(0., 0., float(params.grating_z), 0., 0., 0.),
+            params.grating_period, int(params.grating_order),
+            params.wavelength, half_width=float(params.grating_size)))
+
+    # The lever arm that turns millimetres at the image into arcseconds is
+    # node to image plane, not node to origin. They differ as soon as the
+    # detector is placed rather than solved for.
+    focal_length = params.z0
+    if int(getattr(params, 'use_detector', 0)):
+        terminator = optics.DetectorPlane(optics.Placement(
+            0., 0., float(params.det_z),
+            np.radians(float(params.det_tilt)), 0., 0.))
+        focal_length = params.z0 - float(params.det_z)
+    else:
+        terminator = optics.AutoFocus()
+
+    label = ('Wolter-I' if len(channels) == 1
+             else 'Wolter-I, %d shells' % len(channels))
+    if common:
+        label += ' + grating'
+    return optics.System(channels, terminator, focal_length, sum(areas),
+                         label=label, warnings=notes, common=common)
 
 
 def trace(params, record_paths=True, num_paths=40):
@@ -354,257 +513,212 @@ def trace(params, record_paths=True, num_paths=40):
         ray vignettes, ``message`` explains it and the metrics stay NaN.
     """
     check_misalignment(params)
+    return optics.trace_system(build_system(params), params,
+                               record_paths=record_paths,
+                               num_paths=num_paths)
 
-    result = TraceResult(params)
 
-    rin, rout = shell_radii(params)
-    if not np.isfinite(rin) or not np.isfinite(rout) or rout <= rin:
-        result.message = ('Invalid geometry: the primary has no aperture. '
-                          'Check r0, focal length and psi.')
-        return result
+_SCRIPT_HEAD = '''"""Equivalent PyXFocus script for the current settings."""
+import numpy as np
+import PyXFocus.sources as sources
+import PyXFocus.surfaces as surf
+import PyXFocus.transformations as tran
+import PyXFocus.analyses as anal
+import PyXFocus.conicsolve as conic
 
-    # Geometric aperture of the annulus, in cm^2.
-    result.geometric_area = np.pi * (rout ** 2 - rin ** 2) / 100.
+r0, z0 = {r0!r}, {z0!r}
+primary_length, secondary_length, psi = {pl!r}, {sl!r}, {psi!r}
 
-    if params.seed is not None:
-        np.random.seed(params.seed)
+# Secondary misalignment: mm, then radians.
+misalign = ({dx!r}, {dy!r}, {dz!r},
+            np.radians({rx!r} / 60.), np.radians({ry!r} / 60.),
+            np.radians({rz!r} / 60.))
 
-    rays = sources.annulus(rin, rout, int(params.num_rays))
-    result.num_launched = int(params.num_rays)
-    #: Launch index of every ray still alive, carried through every
-    #: vignette so path samples can be matched up by identity rather than
-    #: by position. See _stack_paths for why position does not work.
-    ray_ids = np.arange(len(rays[1]))
+# Off-axis source: {off!r} arcmin at azimuth {az!r} deg.
+theta = np.radians({off!r} / 60.)
+phi = np.radians({az!r})
 
-    # Start the rays above the primary, still travelling in -z.
-    start_z = params.z0 + params.primary_length + 500.
-    tran.transform(rays, 0, 0, -start_z, 0, 0, 0)
 
-    # Point the beam off-axis.  Direction cosines are set directly so the
-    # ray *positions* stay put and only the incoming angle changes.
-    theta = params.offaxis * _ARCMIN
-    phi = np.radians(params.azimuth)
-    if theta != 0.:
+def drop_dead(rays):
+    """Remove rays the Fortran solver abandoned; it zeroes their cosines.
+
+    Must run straight after the surface call. Left in, these are swallowed
+    by the mirror-extent test and miscounted as rays that missed, and one
+    survivor with n = 0 turns anal.hpd into NaN.
+    """
+    alive = rays[4] ** 2 + rays[5] ** 2 + rays[6] ** 2 >= 0.1
+    return tran.vignette(rays, ind=alive)
+
+
+# One entry per shell, close-packed outward from r0, with the ray budget
+# split between them by collecting area.
+shells = {shells!r}
+
+bundles = []
+for index, (shell_r0, count) in enumerate(shells):
+    rin = conic.primrad(z0, shell_r0, z0, psi=psi)
+    rout = conic.primrad(z0 + primary_length, shell_r0, z0, psi=psi)
+{seed_line}
+    rays = sources.annulus(rin, rout, count)
+    tran.transform(rays, 0, 0, -(z0 + primary_length + 500.), 0, 0, 0)
+    if theta:
         n_rays = len(rays[1])
         rays[4] = np.repeat(np.sin(theta) * np.cos(phi), n_rays)
         rays[5] = np.repeat(np.sin(theta) * np.sin(phi), n_rays)
         rays[6] = np.repeat(-np.cos(theta), n_rays)
 
-    stages = []
-    if record_paths:
-        stages.append(_sample(rays, ray_ids))
-
-    # --- Primary ---
-    surf.wolterprimary(rays, params.r0, params.z0, psi=params.psi)
-    rays, result.nonconverged_primary, alive = _drop_dead(rays)
-    ray_ids = ray_ids[alive]
-    if len(rays[1]) == 0:
-        result.message = ('The surface solver failed to converge on the '
-                          'primary for every ray.')
-        return result
+    # Primary.
+    surf.wolterprimary(rays, shell_r0, z0, psi=psi)
+    rays = drop_dead(rays)
     tran.reflect(rays)
-    ind = np.logical_and(rays[3] > params.z0,
-                         rays[3] < params.z0 + params.primary_length)
-    if not ind.any():
-        result.message = 'All rays missed the primary mirror.'
-        return result
+    ind = np.logical_and(rays[3] > z0, rays[3] < z0 + primary_length)
     rays = tran.vignette(rays, ind=ind)
-    ray_ids = ray_ids[ind]
-    if record_paths:
-        stages.append(_sample(rays, ray_ids))
 
-    # --- Secondary, in its (possibly misaligned) frame ---
-    misalign = params.misalignment()
+    # Secondary, in its misaligned frame.
     tran.transform(rays, *misalign)
-    surf.woltersecondary(rays, params.r0, params.z0, psi=params.psi)
-    rays, result.nonconverged_secondary, alive = _drop_dead(rays)
-    ray_ids = ray_ids[alive]
-    if len(rays[1]) == 0:
-        tran.itransform(rays, *misalign)
-        result.message = ('The surface solver failed to converge on the '
-                          'secondary for every ray.')
-        return result
+    surf.woltersecondary(rays, shell_r0, z0, psi=psi)
+    rays = drop_dead(rays)
     tran.reflect(rays)
     tran.itransform(rays, *misalign)
-
-    ind = np.logical_and(rays[3] > params.z0 - params.secondary_length,
-                         rays[3] < params.z0)
-    if not ind.any():
-        result.message = 'All rays missed the secondary mirror.'
-        return result
+    ind = np.logical_and(rays[3] > z0 - secondary_length, rays[3] < z0)
     rays = tran.vignette(rays, ind=ind)
-    ray_ids = ray_ids[ind]
-    if record_paths:
-        stages.append(_sample(rays, ray_ids))
+    bundles.append(rays)
 
-    # Drop any ray that picked up a non-finite position.
-    good = np.isfinite(rays[1]) & np.isfinite(rays[2]) & np.isfinite(rays[3])
-    result.num_nonfinite = int((~good).sum())
-    if not good.all():
-        rays = tran.vignette(rays, ind=good)
-        ray_ids = ray_ids[good]
-    if len(rays[1]) == 0:
-        result.message = 'No rays survived the trace.'
-        return result
+rays = [np.concatenate([b[i] for b in bundles]) for i in range(10)]
+good = np.isfinite(rays[1]) & np.isfinite(rays[2]) & np.isfinite(rays[3])
+rays = tran.vignette(rays, ind=good)
+'''
 
-    # --- Best focus ---
-    result.focus_z = surf.focusI(rays)
-    if record_paths:
-        stages.append(_sample(rays, ray_ids))
+_SCRIPT_GRATING = '''
+# Grating, {size!r} mm half-width, at z = {gz!r} mm.
+tran.transform(rays, 0, 0, {gz!r}, 0, 0, 0)
+surf.flat(rays)
+count = len(rays[1])
+tran.grat(rays, {period!r}, np.repeat(float({order!r}), count),
+          np.repeat({wave!r}, count))
+rays = drop_dead(rays)
+ind = np.logical_and(np.abs(rays[1]) <= {size!r}, np.abs(rays[2]) <= {size!r})
+rays = tran.vignette(rays, ind=ind)
+tran.itransform(rays, 0, 0, {gz!r}, 0, 0, 0)
+'''
 
-    result.rays = rays
-    result.ray_ids = ray_ids
-    result.num_surviving = len(rays[1])
-    result.hpd_mm = anal.hpd(rays)
-    result.rms_mm = anal.rmsCentroid(rays)
-    result.hpd_arcsec = result.hpd_mm / params.z0 * _ARCSEC_PER_RAD
-    result.rms_arcsec = result.rms_mm / params.z0 * _ARCSEC_PER_RAD
+_SCRIPT_DETECTOR = '''
+# Detector at z = {dz!r} mm, tilted {tilt!r} deg about x.
+tran.transform(rays, 0, 0, {dz!r}, np.radians({tilt!r}), 0, 0)
+surf.flat(rays)
+image_z = {dz!r}
+'''
 
-    if record_paths:
-        ids, xs, ys, zs = _stack_paths(stages, num_paths, result.focus_z)
-        result.path_ids = ids
-        result.path_x, result.path_y, result.path_z = xs, ys, zs
-        # path_r keeps its old name and shape so the 2D layout tab needs no
-        # change and inherits the alignment fix for free.
-        if xs is not None:
-            result.path_r = np.hypot(xs, ys)
+_SCRIPT_AUTOFOCUS = '''
+# Best focus, found from the rays.
+image_z = surf.focusI(rays)
+'''
 
-    _add_warnings(result)
-    return result
-
-
-def _add_warnings(result):
-    """Spell out, in words, when the metrics are bounds rather than values."""
-    lost = result.num_nonconverged
-    if lost:
-        where = []
-        if result.nonconverged_primary:
-            where.append('%d on the primary' % result.nonconverged_primary)
-        if result.nonconverged_secondary:
-            where.append('%d on the secondary' % result.nonconverged_secondary)
-        result.warnings.append(
-            '%d of %d rays (%.1f%%) did not converge (%s). They are excluded '
-            'from every metric, so throughput and collecting area are lower '
-            'bounds.'
-            % (lost, result.num_launched,
-               100. * lost / max(result.num_launched, 1), ', '.join(where)))
-    if result.num_nonfinite:
-        result.warnings.append(
-            '%d rays were dropped for non-finite coordinates.'
-            % result.num_nonfinite)
+_SCRIPT_TAIL = '''
+focal_length = {focal!r}
+hpd_arcsec = anal.hpd(rays) / focal_length * 180. / np.pi * 3600.
+print("rays surviving:", len(rays[1]))
+print("HPD [arcsec]:", hpd_arcsec)
+'''
 
 
-def _drop_dead(rays):
+def script_for(params):
     """
-    Remove rays the Fortran solver gave up on, and count them.
+    The equivalent bare-PyXFocus script for ``params``, as text.
 
-    The solver marks a non-converged ray by zeroing its direction cosines
-    (see the iteration caps in ``woltsurf.f95``).  They must be removed
-    here, immediately after the surface call, for two reasons:
+    Generated from :func:`build_system` rather than kept as a fixed template
+    beside it.  The template it replaced was a second, hand-maintained
+    transcription of the trace, and by the time nesting, gratings and placed
+    detectors existed it described a telescope nobody had asked for while
+    still claiming to be "the equivalent script".
 
-    * Left in, they are swallowed by the mirror-extent test further down
-      and silently counted as rays that *missed the mirror*.  That is a
-      different physical statement and it quietly corrupts throughput.
-    * ``analyses.analyticImagePlane`` computes ``x*l/n``.  A dead ray has
-      ``n = 0``, so one survivor is enough to turn ``focus_z`` -- and every
-      metric derived from it -- into NaN.
-
-    Returns
-    -------
-    (rays, ndead, alive)
-        ``alive`` is the keep-mask, so a caller tracking ray identities can
-        index its own arrays the same way vignette indexed the rays.
+    Shell radii and per-shell ray counts are emitted as literals so that the
+    script does not have to re-derive the close-packing and area-splitting
+    rules -- one fewer thing that can drift.
     """
-    alive = rays[4] ** 2 + rays[5] ** 2 + rays[6] ** 2 >= 0.1
-    ndead = int((~alive).sum())
-    if ndead:
-        rays = tran.vignette(rays, ind=alive)
-    return rays, ndead, alive
+    system = build_system(params)
+    if system.problem:
+        return '# %s\n' % system.problem
 
+    shells = [(channel.elements[0].r0, channel.source.count)
+              for channel in system.channels]
+    if params.seed is None:
+        seed_line = '    # No seed: the ray pattern differs every run.'
+    else:
+        seed_line = '    np.random.seed(%r + index)' % int(params.seed)
 
-def _sample(rays, ray_ids):
-    """
-    Copy this surface's positions, and the launch ids they belong to.
+    text = _SCRIPT_HEAD.format(
+        r0=params.r0, z0=params.z0, pl=params.primary_length,
+        sl=params.secondary_length, psi=params.psi, off=params.offaxis,
+        az=params.azimuth, dx=params.sec_dx, dy=params.sec_dy,
+        dz=params.sec_dz, rx=params.sec_rx, ry=params.sec_ry,
+        rz=params.sec_rz, shells=shells, seed_line=seed_line)
 
-    Copies rather than views: the Fortran surface routines and
-    ``tran.transform`` mutate ``rays`` in place, so a view would be
-    rewritten by the next stage.
-    """
-    return (ray_ids.copy(),
-            np.array(rays[1], dtype=float),
-            np.array(rays[2], dtype=float),
-            np.array(rays[3], dtype=float))
+    for element in system.common:
+        text += _SCRIPT_GRATING.format(
+            gz=element.placement.dz, period=element.period,
+            order=element.order, wave=element.wavelength,
+            size=element.half_width)
 
+    if int(getattr(params, 'use_detector', 0)):
+        text += _SCRIPT_DETECTOR.format(dz=float(params.det_z),
+                                        tilt=float(params.det_tilt))
+    else:
+        text += _SCRIPT_AUTOFOCUS
 
-def _choose_paths(launch_stage, final_ids, num):
-    """
-    Pick which surviving rays to draw, spread evenly around the aperture.
-
-    Taking the first N would cluster them wherever the random source
-    happened to put its low indices; sorting by launch azimuth gives the
-    even fan a layout drawing wants.
-    """
-    ids0, x0, y0, _ = launch_stage
-    row = np.searchsorted(ids0, final_ids)
-    order = np.argsort(np.arctan2(y0[row], x0[row]))
-    if len(order) > num:
-        order = order[np.linspace(0, len(order) - 1, num).astype(int)]
-    # Sorted, because every lookup below is a searchsorted.
-    return np.sort(final_ids[order])
-
-
-def _stack_paths(stages, num, focus_z):
-    """
-    Assemble per-stage samples into ``(stages, rays)`` arrays.
-
-    Alignment is by *ray id*, not by position.  ``tran.vignette`` returns
-    ``[rays[i][ind] ...]``, so survivors are a subsequence and not a
-    prefix -- the previous "truncate every stage to the shortest" scheme
-    joined one ray's launch point to a different ray's mirror hit.
-    Measured at offaxis=10: of 40 drawn polylines only 3 connected the
-    same ray.  That was invisible in the 2D radius plot, because every
-    launch and primary radius lies in a 0.65 mm band, and would be
-    glaring in 3D where azimuth is visible.
-
-    Each stage's ids are a subset of the previous stage's and both are
-    sorted, so ``searchsorted`` recovers each chosen ray's row exactly.
-    """
-    if not stages:
-        return None, None, None, None
-    final_ids = stages[-1][0]
-    if len(final_ids) == 0:
-        return None, None, None, None
-
-    chosen = _choose_paths(stages[0], final_ids, num)
-    shape = (len(stages), len(chosen))
-    xs = np.empty(shape)
-    ys = np.empty(shape)
-    zs = np.empty(shape)
-    for k, (ids, x, y, z) in enumerate(stages):
-        row = np.searchsorted(ids, chosen)
-        xs[k], ys[k], zs[k] = x[row], y[row], z[row]
-
-    # focusI moves the coordinate FRAME, not just the rays (surfaces.focus
-    # calls tran.transform twice), so at the focus stage every ray sits at
-    # z = 0 in the focus frame.  Put it back into global z.
-    zs[-1] += focus_z
-    return chosen, xs, ys, zs
+    return text + _SCRIPT_TAIL.format(focal=system.focal_length)
 
 
 def mirror_profile(params, num=200):
     """
     Radius vs z along both mirrors, for drawing the telescope in profile.
 
+    The numbers come from the elements themselves rather than from a second
+    copy of the radius law here.  That matters more than it looks: a 3D view
+    builds its meshes by sweeping the very same ``profile`` calls, so the two
+    views cannot drift into disagreeing about where a mirror is.
+
     Returns
     -------
     (zp, rp), (zs, rs)
         Primary and secondary profiles.
     """
-    zp = np.linspace(params.z0, params.z0 + params.primary_length, num)
-    rp = conic.primrad(zp, params.r0, params.z0, psi=params.psi)
-    zs = np.linspace(params.z0 - params.secondary_length, params.z0, num)
-    rs = conic.secrad(zs, params.r0, params.z0, psi=params.psi)
+    (zp, rp), = WolterPrimary(params).profile(num)
+    (zs, rs), = WolterSecondary(params).profile(num)
     return (zp, rp), (zs, rs)
+
+
+def mirror_profiles(params, num=200):
+    """
+    :func:`mirror_profile` for every shell in the nest, innermost first.
+
+    A single-shell design gives a one-element list whose entry is exactly
+    what :func:`mirror_profile` returns, so a caller that draws this list
+    draws the old picture unchanged when there is nothing new to draw.
+    """
+    out = []
+    for r0 in shell_radii_all(params):
+        (zp, rp), = WolterPrimary(params, r0).profile(num)
+        (zs, rs), = WolterSecondary(params, r0).profile(num)
+        out.append(((zp, rp), (zs, rs)))
+    return out
+
+
+def mirror_z_range(params):
+    """
+    Axial span of the optics, for a view that wants to zoom on them.
+
+    Asks the system rather than recomputing ``z0`` plus a mirror length, so
+    that a design with more surfaces -- or with surfaces that are not Wolter
+    conics -- widens the zoom without the caller learning anything new.
+    """
+    span = build_system(params).mirror_z_range()
+    if span is None:
+        # A degenerate design builds no channels at all. Fall back to the
+        # nominal extents so a viewer still has something to scale to.
+        return (params.z0 - params.secondary_length,
+                params.z0 + params.primary_length)
+    return span
 
 
 #: One tunable parameter: how it is labelled, its range, and how finely it
@@ -627,6 +741,8 @@ PARAM_SPECS = (
     ParamSpec('primary_length', 'Primary length', 'mm', 100., 1., 2000., 1, 10.),
     ParamSpec('secondary_length', 'Secondary length', 'mm', 100., 1., 2000., 1, 10.),
     ParamSpec('psi', 'Prescription ψ', '', 1., 0.1, 10., 3, 0.1),
+    ParamSpec('num_shells', 'Number of shells', '', 1, 1, 50, 0, 1),
+    ParamSpec('shell_gap', 'Shell wall + gap', 'mm', 1., 0.01, 50., 3, 0.1),
 
     ParamSpec('offaxis', 'Off-axis angle', 'arcmin', 0., 0., 120., 3, 0.5),
     ParamSpec('azimuth', 'Azimuth', 'deg', 0., 0., 360., 1, 15.),
@@ -647,24 +763,49 @@ PARAM_SPECS = (
     ParamSpec('sec_rz', 'Tilt about z', 'arcmin', 0.,
               -MAX_ROTATION_ARCMIN, MAX_ROTATION_ARCMIN, 4, 0.05),
 
-    #: Carried through configurations but given no field, so that a saved
-    #: seed survives a round trip instead of silently reverting to 0.
+    ParamSpec('grating_z', 'Grating position z', 'mm', 500., 1., 100000., 1, 25.),
+    ParamSpec('grating_period', 'Groove period', 'nm', 200., 1., 100000., 2, 10.),
+    ParamSpec('grating_order', 'Order', '', 1, -20, 20, 0, 1),
+    ParamSpec('wavelength', 'Wavelength', 'nm', 2., 0., 100., 4, 0.5),
+    ParamSpec('grating_size', 'Grating half-width', 'mm', 120., 1., 5000., 1, 10.),
+
+    ParamSpec('det_z', 'Detector position z', 'mm', 0., -1000., 1000., 3, 1.),
+    ParamSpec('det_tilt', 'Detector tilt about x', 'deg', 0., -80., 80., 3, 1.),
+
+    #: Carried through configurations but given no field of their own.
+    #:
+    #: ``seed`` so that a saved seed survives a round trip instead of
+    #: silently reverting to 0; the two ``use_`` flags because they are
+    #: driven by their group's checkbox rather than by a spin box.
+    ParamSpec('use_grating', 'Grating fitted', '', 0, None, None, 0, 1),
+    ParamSpec('use_detector', 'Detector placed', '', 0, None, None, 0, 1),
     ParamSpec('seed', 'Random seed', '', 0, None, None, 0, 1),
 )
 
-#: How the panel groups the fields, as (heading, parameter names).
+#: How the panel groups the fields, as (heading, parameter names, enable).
+#:
+#: ``enable`` is None for a group that is always on, or the name of a 0/1
+#: parameter the group's own checkbox drives.  An optional part of the
+#: instrument is then one entry here rather than a special case in the panel.
 PARAM_GROUPS = (
-    ('Geometry', ('r0', 'z0', 'primary_length', 'secondary_length', 'psi')),
-    ('Source', ('offaxis', 'azimuth', 'num_rays')),
+    ('Geometry', ('r0', 'z0', 'primary_length', 'secondary_length', 'psi',
+                  'num_shells', 'shell_gap'), None),
+    ('Source', ('offaxis', 'azimuth', 'num_rays'), None),
     ('Secondary misalignment', ('sec_dx', 'sec_dy', 'sec_dz',
-                                'sec_rx', 'sec_ry', 'sec_rz')),
+                                'sec_rx', 'sec_ry', 'sec_rz'), None),
+    ('Grating', ('grating_z', 'grating_period', 'grating_order',
+                 'wavelength', 'grating_size'), 'use_grating'),
+    ('Detector', ('det_z', 'det_tilt'), 'use_detector'),
 )
 
 #: Field names carried in a saved configuration, in a stable order.
 PARAM_FIELDS = tuple(spec.name for spec in PARAM_SPECS)
 
-#: Fields stored as integers rather than floats.
-_INT_FIELDS = frozenset(('num_rays', 'seed'))
+#: Fields stored as integers rather than floats. Public because the
+#: parameter panel needs the same list to round its spin boxes, and a
+#: second copy over there is exactly how num_shells arrived as 3.0000001.
+INT_FIELDS = frozenset(('num_rays', 'num_shells', 'grating_order',
+                        'use_grating', 'use_detector', 'seed'))
 
 _SPEC_BY_NAME = dict((spec.name, spec) for spec in PARAM_SPECS)
 
@@ -685,12 +826,17 @@ SWEEPABLE = [
     ('primary_length', 'Primary length', 'mm'),
     ('secondary_length', 'Secondary length', 'mm'),
     ('psi', 'Prescription psi', ''),
+    ('num_shells', 'Number of shells', ''),
+    ('shell_gap', 'Shell wall + gap', 'mm'),
     ('sec_dx', 'Secondary shift x', 'mm'),
     ('sec_dy', 'Secondary shift y', 'mm'),
     ('sec_dz', 'Secondary shift z', 'mm'),
     ('sec_rx', 'Secondary tilt x', 'arcmin'),
     ('sec_ry', 'Secondary tilt y', 'arcmin'),
     ('sec_rz', 'Secondary tilt z', 'arcmin'),
+    ('det_z', 'Detector position z', 'mm'),
+    ('det_tilt', 'Detector tilt about x', 'deg'),
+    ('wavelength', 'Wavelength', 'nm'),
 ]
 
 
@@ -712,8 +858,14 @@ SWEEP_RANGES = {
     'primary_length': (10., 300.),
     'secondary_length': (10., 300.),
     'psi': (0.5, 2.0),
+    'num_shells': (1., 12.),
+    'shell_gap': (0.5, 10.),
     'sec_dx': (0., 1.), 'sec_dy': (0., 1.), 'sec_dz': (0., 1.),
     'sec_rx': (0., 2.), 'sec_ry': (0., 2.), 'sec_rz': (0., 2.),
+    # A through-focus scan: the classic use for sweeping a placed detector.
+    'det_z': (-10., 10.),
+    'det_tilt': (0., 20.),
+    'wavelength': (0.5, 5.),
 }
 
 
@@ -882,4 +1034,4 @@ def encircled_energy(result, num=200):
     if len(rad) > num:
         idx = np.linspace(0, len(rad) - 1, num).astype(int)
         rad, frac = rad[idx], frac[idx]
-    return rad / result.params.z0 * _ARCSEC_PER_RAD, frac
+    return rad / result.focal_length * _ARCSEC_PER_RAD, frac

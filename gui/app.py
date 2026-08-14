@@ -59,20 +59,32 @@ class ParameterPanel(QtWidgets.QWidget):
         #: for. Without this a saved seed would silently revert to 0 on
         #: reload, which makes a "reproducible" configuration a lie.
         self._carried = {}
+        #: Checkable groups, keyed by the 0/1 parameter each one drives.
+        self._enables = {}
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        for title, names in wolter.PARAM_GROUPS:
-            layout.addWidget(self._group(title, names))
+        for title, names, enable in wolter.PARAM_GROUPS:
+            layout.addWidget(self._group(title, names, enable))
         layout.addStretch(1)
 
-        grouped = set(n for _, names in wolter.PARAM_GROUPS for n in names)
+        grouped = set(n for _, names, _ in wolter.PARAM_GROUPS for n in names)
         for spec in wolter.PARAM_SPECS:
             if spec.name not in grouped:
                 self._carried[spec.name] = spec.default
 
-    def _group(self, title, names):
+    def _group(self, title, names, enable=None):
         box = QtWidgets.QGroupBox(title)
+        if enable is not None:
+            # A checkable group box greys out its own contents, so an
+            # optional part of the instrument needs no extra plumbing to
+            # look optional. The flag itself rides in _carried with the
+            # other fieldless parameters.
+            box.setCheckable(True)
+            box.setChecked(bool(wolter.param_spec(enable).default))
+            box.toggled.connect(
+                lambda on, key=enable: self._set_enabled(key, on))
+            self._enables[enable] = box
         form = QtWidgets.QFormLayout(box)
         form.setLabelAlignment(QtCore.Qt.AlignRight)
         for name in names:
@@ -90,12 +102,17 @@ class ParameterPanel(QtWidgets.QWidget):
             form.addRow(spec.label + ':', spin)
         return box
 
+    def _set_enabled(self, key, on):
+        """Record a group checkbox and re-trace, as a spin box would."""
+        self._carried[key] = int(bool(on))
+        self.changed.emit()
+
     def params(self):
         """Current field values as a :class:`WolterParams`."""
         p = WolterParams()
         for name, spin in self._spins.items():
             value = spin.value()
-            setattr(p, name, int(value) if name == 'num_rays' else value)
+            setattr(p, name, int(value) if name in wolter.INT_FIELDS else value)
         for name, value in self._carried.items():
             setattr(p, name, value)
         return p
@@ -128,7 +145,7 @@ class ParameterPanel(QtWidgets.QWidget):
                     adjusted.append((name, wanted, spin.value()))
                     continue
 
-                if name == 'num_rays':
+                if name in wolter.INT_FIELDS:
                     # decimals=0 rounds rather than truncates, and params()
                     # takes int() of whatever lands; round here so the value
                     # reported as applied is the value actually used.
@@ -147,6 +164,16 @@ class ParameterPanel(QtWidgets.QWidget):
         for name in self._carried:
             if hasattr(params, name):
                 self._carried[name] = getattr(params, name)
+
+        # Checkboxes after _carried, and with signals blocked, so that the
+        # one changed emitted below is still the only one -- a listener must
+        # see a whole parameter set, never a half-applied one.
+        for name, box in self._enables.items():
+            box.blockSignals(True)
+            try:
+                box.setChecked(bool(self._carried.get(name, 0)))
+            finally:
+                box.blockSignals(False)
 
         self.changed.emit()
         return adjusted
@@ -245,57 +272,8 @@ class MetricsBar(QtWidgets.QWidget):
             self._captions[key + '_widget'].setStyleSheet(self.GREY)
 
 
-SCRIPT_TEMPLATE = '''"""Equivalent PyXFocus script for the current settings."""
-import numpy as np
-import PyXFocus.sources as sources
-import PyXFocus.surfaces as surf
-import PyXFocus.transformations as tran
-import PyXFocus.analyses as anal
-import PyXFocus.conicsolve as conic
-
-r0, z0 = {r0!r}, {z0!r}
-primary_length, secondary_length, psi = {pl!r}, {sl!r}, {psi!r}
-
-# Primary entrance aperture.
-rin = conic.primrad(z0, r0, z0, psi=psi)
-rout = conic.primrad(z0 + primary_length, r0, z0, psi=psi)
-
-np.random.seed({seed!r})
-rays = sources.annulus(rin, rout, {n!r})
-tran.transform(rays, 0, 0, -(z0 + primary_length + 500.), 0, 0, 0)
-
-# Off-axis source: {off!r} arcmin at azimuth {az!r} deg.
-theta = np.radians({off!r} / 60.)
-phi = np.radians({az!r})
-if theta:
-    n_rays = len(rays[1])
-    rays[4] = np.repeat(np.sin(theta) * np.cos(phi), n_rays)
-    rays[5] = np.repeat(np.sin(theta) * np.sin(phi), n_rays)
-    rays[6] = np.repeat(-np.cos(theta), n_rays)
-
-# Primary.
-surf.wolterprimary(rays, r0, z0, psi=psi)
-tran.reflect(rays)
-ind = np.logical_and(rays[3] > z0, rays[3] < z0 + primary_length)
-rays = tran.vignette(rays, ind=ind)
-
-# Secondary, in its misaligned frame.
-misalign = ({dx!r}, {dy!r}, {dz!r},
-            np.radians({rx!r} / 60.), np.radians({ry!r} / 60.),
-            np.radians({rz!r} / 60.))
-tran.transform(rays, *misalign)
-surf.woltersecondary(rays, r0, z0, psi=psi)
-tran.reflect(rays)
-tran.itransform(rays, *misalign)
-ind = np.logical_and(rays[3] > z0 - secondary_length, rays[3] < z0)
-rays = tran.vignette(rays, ind=ind)
-
-# Best focus and performance.
-focus_z = surf.focusI(rays)
-hpd_arcsec = anal.hpd(rays) / z0 * 180. / np.pi * 3600.
-print("rays surviving:", len(rays[1]))
-print("HPD [arcsec]:", hpd_arcsec)
-'''
+# The equivalent-script text is generated from the system itself, in
+# wolter.script_for -- see its docstring for why it is not a template here.
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -521,12 +499,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.critical(self, 'Trace failed', message)
 
     def show_script(self):
-        p = self.panel.params()
-        script = SCRIPT_TEMPLATE.format(
-            r0=p.r0, z0=p.z0, pl=p.primary_length, sl=p.secondary_length,
-            psi=p.psi, seed=p.seed, n=int(p.num_rays), off=p.offaxis,
-            az=p.azimuth, dx=p.sec_dx, dy=p.sec_dy, dz=p.sec_dz,
-            rx=p.sec_rx, ry=p.sec_ry, rz=p.sec_rz)
+        script = wolter.script_for(self.panel.params())
 
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle('Equivalent PyXFocus script')

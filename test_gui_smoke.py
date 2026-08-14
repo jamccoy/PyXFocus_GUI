@@ -405,6 +405,55 @@ def test_the_sweep_tab_is_not_fed_traces():
     assert not hasattr(_plot_tabs().tab('sweep'), 'set_result')
 
 
+def test_show_script_actually_runs():
+    """
+    The "Show script" text really does reproduce the trace it claims to.
+
+    Nothing used to check this, and the script was a second hand-maintained
+    transcription of the pipeline -- the obvious thing to quietly hand a user
+    a script that is not their design. Covered across every optional part,
+    because that is exactly where a generated script can go wrong.
+    """
+    from PyXFocus.gui.wolter import script_for, trace
+
+    designs = [
+        ('plain', WolterParams(offaxis=2., azimuth=30., num_rays=2000,
+                               seed=17)),
+        ('misaligned', WolterParams(num_rays=2000, seed=3, sec_dy=.2,
+                                    sec_rx=.7)),
+        ('nested', WolterParams(num_rays=3000, seed=5, num_shells=4,
+                                shell_gap=2.)),
+        ('grating', WolterParams(num_rays=2000, seed=7, use_grating=1,
+                                 grating_order=1, wavelength=2.5)),
+        ('detector', WolterParams(num_rays=2000, seed=11, use_detector=1,
+                                  det_z=6., det_tilt=2.)),
+        ('everything', WolterParams(num_rays=3000, seed=13, num_shells=3,
+                                    offaxis=1., use_grating=1,
+                                    use_detector=1, det_z=3.)),
+    ]
+
+    env = dict(os.environ)
+    env['PYTHONPATH'] = os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))
+
+    for name, p in designs:
+        out = subprocess.check_output(
+            [sys.executable, '-c', script_for(p)], env=env)
+        printed = {}
+        for line in out.decode('utf-8').strip().split('\n'):
+            key, _, value = line.partition(':')
+            printed[key.strip()] = value.strip()
+
+        result = trace(p)
+        assert int(printed['rays surviving']) == result.num_surviving, (
+            '%s: the script vignettes differently, %s vs %d'
+            % (name, printed['rays surviving'], result.num_surviving))
+        assert np.isclose(float(printed['HPD [arcsec]']), result.hpd_arcsec,
+                          rtol=1e-9), (
+            '%s: the script no longer reproduces the trace, %s vs %r'
+            % (name, printed['HPD [arcsec]'], result.hpd_arcsec))
+
+
 def test_registry_order_is_append_only():
     """
     The active tab is persisted as an integer INDEX, in two places --
@@ -413,8 +462,8 @@ def test_registry_order_is_append_only():
     tab. New tabs go on the end until that is stored by key instead.
     """
     from PyXFocus.gui.tabs import TABS
-    assert [spec.key for spec in TABS][:4] == ['spot', 'layout', 'energy',
-                                               'sweep']
+    assert [spec.key for spec in TABS][:5] == ['spot', 'layout', 'energy',
+                                               'sweep', 'layout3d']
 
 
 def test_clear_results_does_not_remove_the_tabs():
@@ -430,8 +479,8 @@ def test_plot_tabs_do_not_paint_until_flushed():
     tabs = _plot_tabs()
     from PyXFocus.gui.wolter import trace
     tabs.set_result(trace(WolterParams(num_rays=500)))
-    panes = [tabs.tab(k) for k in ('spot', 'layout', 'energy')]
-    assert [p.paints for p in panes] == [0, 0, 0]
+    panes = [tabs.tab(k) for k in ('spot', 'layout', 'energy', 'layout3d')]
+    assert [p.paints for p in panes] == [0, 0, 0, 0]
 
 
 def test_the_spot_tab_plots_the_arcsecond_spot():
@@ -455,6 +504,215 @@ def test_the_energy_tab_plots_what_wolter_computed():
     rad, frac = W.encircled_energy(result)
     drawn = tab.ax.lines[0].get_xydata()
     assert np.allclose(drawn, np.column_stack([rad, frac]))
+
+
+def _drawn_3d(**kwargs):
+    """A flushed 3D tab and the result it drew."""
+    from PyXFocus.gui.wolter import trace
+    result = trace(WolterParams(num_rays=kwargs.pop('num_rays', 500),
+                                **kwargs))
+    tab = _plot_tabs().tab('layout3d')
+    tab.set_result(result)
+    tab.flush()
+    return tab, result
+
+
+def test_the_3d_tab_draws_rays_as_one_collection():
+    """
+    Forty polylines, one artist.
+
+    mplot3d re-projects the whole scene per artist on every mouse move, so
+    this is a frame-rate contract rather than tidiness.
+    """
+    from PyXFocus.gui.tabs.layout3d import RAYS_GID
+    tab, result = _drawn_3d(offaxis=2.)
+    rays = [c for c in tab.ax.collections if c.get_gid() == RAYS_GID]
+    assert len(rays) == 1, 'expected exactly one ray collection, got %d' % len(rays)
+    assert len(rays[0]._segments3d) == result.path_x.shape[1], (
+        'drew %d polylines for %d recorded paths'
+        % (len(rays[0]._segments3d), result.path_x.shape[1]))
+
+
+def test_the_3d_tab_blanks_on_none():
+    """A cleared tab keeps nothing, labels included."""
+    tab, _ = _drawn_3d()
+    assert tab.ax.collections or tab.ax.lines
+    tab.set_result(None)
+    tab.flush()
+    assert tab.ax.collections == []
+    assert tab.ax.lines == []
+    assert tab.ax.get_title() == ''
+
+
+def test_the_3d_tab_keeps_x_and_y_to_the_same_scale():
+    """
+    Azimuth, tilt and decentre all live in the x-y plane.
+
+    Only z may be compressed; squashing x against y would destroy the very
+    thing this view exists to show.
+    """
+    tab, _ = _drawn_3d(offaxis=2.)
+    assert np.allclose(tab.ax.get_xlim(), tab.ax.get_ylim()), (
+        'x and y are not to the same scale: %r vs %r'
+        % (tab.ax.get_xlim(), tab.ax.get_ylim()))
+
+
+def test_mirrors_only_zooms_and_repaints():
+    """
+    A view control repaints, though the result has not changed.
+
+    FigurePane's identity gate is right about results and knows nothing
+    about views, which is what force_repaint exists to say.
+    """
+    tab, result = _drawn_3d()
+    before = tab.ax.get_zlim()
+    painted = tab.paints
+
+    tab.mirrors_only.setChecked(True)
+    assert tab.paints == painted + 1, 'toggling a view control did not repaint'
+
+    after = tab.ax.get_zlim()
+    assert (after[1] - after[0]) < (before[1] - before[0]), (
+        'mirrors-only did not narrow the z range: %r -> %r' % (before, after))
+    from PyXFocus.gui.wolter import mirror_z_range
+    zlo, zhi = mirror_z_range(result.params)
+    assert after[0] <= zlo and after[1] >= zhi, (
+        'mirrors-only clipped the optics: %r excludes %r' % (after, (zlo, zhi)))
+
+
+def test_the_3d_tab_survives_the_solid_toggle():
+    """Solid half-shells draw, and leave the rays visible."""
+    from PyXFocus.gui.tabs.layout3d import RAYS_GID
+    tab, _ = _drawn_3d()
+    tab.solid.setChecked(True)
+    rays = [c for c in tab.ax.collections if c.get_gid() == RAYS_GID]
+    assert len(rays) == 1, 'rays vanished when surfaces went solid'
+    assert len(tab.ax.collections) > 1, 'no surfaces were drawn'
+
+
+def test_the_3d_tab_draws_a_misaligned_secondary_where_it_is():
+    """
+    The payoff: a tilt that the 2D profile cannot show at all.
+
+    mirror_profile returns the nominal prescription regardless of
+    misalignment, so the profile view is identical either way. The 3D view
+    goes through Element.patches, which honours the placement.
+    """
+    from PyXFocus.gui.wolter import WolterParams as P, mirror_profile
+    from PyXFocus.gui.wolter import WolterSecondary
+
+    aligned, tilted = P(), P(sec_rx=5.)
+    (_, ra), _ = mirror_profile(aligned)
+    (_, rt), _ = mirror_profile(tilted)
+    assert np.array_equal(ra, rt), 'premise changed: profiles now differ'
+
+    flat, = WolterSecondary(aligned).patches(n_azimuth=24, num=8)
+    bent, = WolterSecondary(tilted).patches(n_azimuth=24, num=8)
+    assert not np.allclose(flat.z, bent.z), (
+        'the 3D geometry ignored the tilt too')
+
+
+def test_optional_groups_drive_their_flag():
+    """
+    A checkable group box is the on/off switch for that part of the system.
+
+    The flag has no spin box of its own, so if the checkbox does not write
+    it, an unticked Grating group would still trace with a grating.
+    """
+    from PyXFocus.gui.app import ParameterPanel
+    panel = ParameterPanel()
+    _KEEP_ALIVE.append(panel)
+
+    assert panel.params().use_grating == 0, 'a grating is fitted by default'
+    panel._enables['use_grating'].setChecked(True)
+    assert panel.params().use_grating == 1, 'ticking the group did nothing'
+    panel._enables['use_grating'].setChecked(False)
+    assert panel.params().use_grating == 0, 'unticking the group did nothing'
+
+
+def test_optional_groups_follow_a_loaded_design():
+    """
+    Loading a design ticks its groups, and emits `changed` exactly once.
+
+    A listener that reads params() mid-load would otherwise see a grating
+    whose parameters have not landed yet.
+    """
+    from PyXFocus.gui.app import ParameterPanel
+    panel = ParameterPanel()
+    _KEEP_ALIVE.append(panel)
+
+    seen = []
+    panel.changed.connect(lambda: seen.append(panel.params().use_detector))
+    panel.set_params(WolterParams(use_detector=1, det_z=4.))
+
+    assert panel._enables['use_detector'].isChecked(), (
+        'a loaded detector left its group unticked')
+    assert panel.params().det_z == 4.
+    assert seen == [1], 'expected exactly one settled change, got %r' % seen
+
+
+def test_the_3d_tab_draws_every_shell():
+    """
+    A nest draws without the tab learning anything about nesting.
+
+    The whole point of the geometry contract: the tab asks the system for
+    patches and never counts shells. The vertex budget must still hold, or
+    rotating a twenty-shell design becomes a slideshow.
+    """
+    from PyXFocus.gui.tabs.layout3d import MAX_VERTICES, RAYS_GID
+
+    tab_one, _ = _drawn_3d(num_shells=1)
+    surfaces_one = len([c for c in tab_one.ax.collections
+                        if c.get_gid() != RAYS_GID])
+
+    tab_many, _ = _drawn_3d(num_shells=6)
+    surfaces_many = len([c for c in tab_many.ax.collections
+                         if c.get_gid() != RAYS_GID])
+    assert surfaces_many > surfaces_one, (
+        'six shells drew %d surfaces, one shell drew %d'
+        % (surfaces_many, surfaces_one))
+
+    from PyXFocus.gui.tabs.layout3d import azimuth_for, N_AXIAL
+    from PyXFocus.gui.wolter import WolterParams as P, build_system
+    system = build_system(P(num_shells=20))
+    total = sum(p.x.size for p in system.patches(
+        n_azimuth=azimuth_for(len(system.elements)), num=N_AXIAL))
+    assert total <= MAX_VERTICES, '20 shells is %d vertices' % total
+
+
+def test_settings_session_migrates_an_older_version():
+    """
+    A remembered session gets the same migrations a file does.
+
+    The version was already written and range-checked on read, but nothing
+    ever acted on it -- so a session from before a field existed degraded
+    with notes where a migration had the real answer.
+    """
+    store = _store()
+    fields = dict(WolterParams().to_dict())
+    del fields['num_shells']
+    del fields['shell_gap']
+    store._settings.setValue(store.PARAMETERS, json.dumps(fields))
+    store._settings.setValue(store.VERSION, 1)
+
+    problems = []
+    params = store.session_params(problems)
+    assert params is not None, 'an older session must still load'
+    assert params.num_shells == 1, params.num_shells
+    assert params.shell_gap == 1., params.shell_gap
+    assert any('predates nested shells' in p for p in problems), problems
+
+
+def test_the_layout_tab_draws_a_pair_of_mirrors_per_shell():
+    """The 2D view keeps up with the nest it is given."""
+    from PyXFocus.gui.wolter import trace
+    tab = _plot_tabs().tab('layout')
+    tab.set_result(trace(WolterParams(num_shells=4, num_rays=800)))
+    tab.flush()
+    # One ray artist plus two mirror lines per shell, plus the focus line.
+    labels = [line.get_label() for line in tab.ax.lines]
+    assert labels.count('Primary') == 1, 'a nest should not repeat its legend'
+    assert labels.count('Secondary') == 1
 
 
 def test_the_layout_tab_clears_its_inset():

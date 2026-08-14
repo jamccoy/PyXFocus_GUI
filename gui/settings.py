@@ -457,4 +457,12 @@ class AppSettings(object):
                             'starting from defaults' % type(data).__name__)
             return None
 
+        if version < config.VERSION:
+            # A session is the same parameter block a file carries, so it
+            # earns the same migrations. Without this the version recorded
+            # above is written and checked but never actually used for
+            # anything, and an older session degrades field by field with
+            # notes that a migration would have answered properly.
+            data = config.migrate_parameters(data, version, problems)
+
         return wolter.WolterParams.from_dict(data, problems)

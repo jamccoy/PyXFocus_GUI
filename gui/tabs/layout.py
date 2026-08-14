@@ -41,7 +41,7 @@ class LayoutTab(FigurePane):
             return
 
         params = result.params
-        profiles = wolter.mirror_profile(params)
+        profiles = wolter.mirror_profiles(params)
         self._plot_into(ax, result, profiles, full=True)
 
         ax.set_xlabel('z [mm]')
@@ -50,14 +50,14 @@ class LayoutTab(FigurePane):
         ax.legend(loc='upper left', fontsize=8)
         ax.grid(alpha=.3)
 
-        (zp, rp), (zs, rs) = profiles
         # Rays run diagonally from bottom-left to top-right, so the bottom
         # -right corner is free; the legend keeps the top-left.
         inset = ax.inset_axes([0.55, 0.12, 0.42, 0.45])
         self._plot_into(inset, result, profiles, full=False)
-        zlo = params.z0 - params.secondary_length
-        zhi = params.z0 + params.primary_length
-        rlo, rhi = float(np.min(rs)), float(np.max(rp))
+        zlo, zhi = wolter.mirror_z_range(params)
+        # Across the whole nest, not just the shell that happens to be first.
+        rlo = min(float(np.min(rs)) for _, (_, rs) in profiles)
+        rhi = max(float(np.max(rp)) for (_, rp), _ in profiles)
         zpad, rpad = .05 * (zhi - zlo), max(.05 * (rhi - rlo), 1e-3)
         inset.set_xlim(zlo - zpad, zhi + zpad)
         inset.set_ylim(rlo - rpad, rhi + rpad)
@@ -69,15 +69,18 @@ class LayoutTab(FigurePane):
 
     @staticmethod
     def _plot_into(ax, result, profiles, full):
-        """Draw mirrors, rays and focus into ``ax``."""
-        (zp, rp), (zs, rs) = profiles
+        """Draw mirrors, rays and focus into ``ax``, one pair per shell."""
         if result.path_z is not None:
             # Columns are individual rays, rows are successive surfaces.
             ax.plot(result.path_z, result.path_r, color='#1f77b4',
                     lw=.4, alpha=.5)
-        ax.plot(zp, rp, color='k', lw=2.5,
-                label='Primary' if full else None)
-        ax.plot(zs, rs, color='#d62728', lw=2.5,
-                label='Secondary' if full else None)
+        for shell, ((zp, rp), (zs, rs)) in enumerate(profiles):
+            # Only the first shell is labelled: a twenty-shell nest would
+            # otherwise be twenty identical legend entries.
+            first = full and shell == 0
+            ax.plot(zp, rp, color='k', lw=2.5,
+                    label='Primary' if first else None)
+            ax.plot(zs, rs, color='#d62728', lw=2.5,
+                    label='Secondary' if first else None)
         if full:
             ax.axvline(0., color='crimson', ls='--', lw=1, label='Focus')
