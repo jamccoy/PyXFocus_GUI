@@ -1,0 +1,38 @@
+<!-- pyxfocus-docs v1 sha256:3c4317acba4bbf58b6cf9de1a30779fec44574628b302de23a332d1eec1702bc -->
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<style type="text/css">
+body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+       font-size: 13px; line-height: 145%; margin: 12px; }
+h1 { font-size: 21px; margin: 2px 0 10px 0; }
+h2 { font-size: 17px; margin: 20px 0 6px 0; }
+h3 { font-size: 14px; margin: 16px 0 4px 0; }
+p, li { margin: 6px 0; }
+a { color: #1a5fb4; }
+code { font-family: Menlo, Consolas, monospace; font-size: 12px;
+       background-color: #f0f0f0; }
+pre { font-family: Menlo, Consolas, monospace; font-size: 12px;
+      background-color: #f4f4f4; padding: 8px; margin: 8px 0; }
+table { border-width: 1px; border-style: solid; border-color: #cccccc;
+        margin: 10px 0; }
+th { background-color: #f0f0f0; padding: 4px 8px; text-align: left; }
+td { padding: 4px 8px; }
+blockquote { color: #555555; margin: 8px 0 8px 16px; }
+</style>
+</head>
+<body>
+<a name="known-limitations"></a><h1 id="known-limitations">Known Limitations</h1>
+<a name="misalignment-limits"></a><h2 id="misalignment-limits">Misalignment limits</h2>
+<p>The secondary misalignment fields (in the GUI and in <code>PyXFocus.gui.wolter.WolterParams</code>) are capped at <strong>±20 mm</strong> and <strong>±15 arcmin</strong>. This is not a physics limit — it guards a real defect in the Fortran secondary solver (<code>woltsurf.f95</code>): once the secondary is displaced far enough that rays no longer intersect the hyperboloid, the Newton iteration never converges and hangs with no error.</p>
+<p>Measured empirically: translations hang somewhere between 80 and 100 mm, rotations between 20 and 40 arcmin. The caps sit well inside that margin. They're still enormous next to real Wolter-I alignment tolerances (microns and arcseconds) — past roughly a millimetre, so few rays survive vignetting that the numbers stop meaning much anyway, so the caps are generous in practice, not restrictive.</p>
+<p><code>PyXFocus.gui.wolter.trace</code> (via <code>check_misalignment</code>) enforces the same limits with a clear <code>ValueError</code>, so a script hits a readable error instead of the same hang.</p>
+<a name="collecting-area-has-no-reflectivity-model"></a><h2 id="collecting-area-has-no-reflectivity-model">Collecting area has no reflectivity model</h2>
+<p>The collecting area reported by the GUI and by <code>trace()</code> is the <strong>geometric</strong> entrance aperture times the vignetting fraction. It contains no mirror reflectivity, because PyXFocus ships no reflectivity model — so it is an upper bound, not a true effective area.</p>
+<p>A real Wolter-I loses roughly 10–20% per bounce with a good coating, twice over (primary and secondary), and considerably more as photon energy rises. Turning this into a genuine effective area needs a coating reflectivity table indexed by graze angle and photon energy; <code>analyses.grazeAngle</code> already computes the per-ray graze angles that such a table would need as input — the missing piece is the table itself, not the plumbing.</p>
+<a name="no-ci"></a><h2 id="no-ci">No CI</h2>
+<p>There's currently no <code>.github/workflows</code> — <code>build_extensions.py</code>, <code>test_smoke.py</code>, and <code>test_gui_smoke.py</code> are run locally rather than on push/PR.</p>
+<a name="stale-examples"></a><h2 id="stale-examples">Stale examples</h2>
+<p>See the note on <code>examples/</code> in <strong><a href="Architecture-and-Repository-Layout.html">Architecture and Repository Layout</a></strong> — most of that folder predates the current API and won't run as-is.</p>
+</body>
+</html>

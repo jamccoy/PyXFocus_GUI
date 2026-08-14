@@ -209,6 +209,11 @@ class AppSettings(object):
     """Everything the app remembers between runs, behind one object."""
 
     GEOMETRY = 'window/geometry'
+    #: The docs viewer's own geometry. A separate key, not a separate code
+    #: path: it goes through restore_geometry/save_geometry like the main
+    #: window, so the off-screen guard covers it too. A docs window restored
+    #: onto a monitor that is no longer attached is exactly as lost.
+    DOCS_GEOMETRY = 'window/docs_geometry'
     STATE = 'window/state'
     SPLITTER = 'window/splitter'
     TAB = 'window/tab'
@@ -297,17 +302,20 @@ class AppSettings(object):
 
     # -- window layout -----------------------------------------------------
 
-    def restore_geometry(self, window, rects=None):
+    def restore_geometry(self, window, rects=None, key=None):
         """
         Put the window back where it was, if that is still somewhere real.
 
         Call **before** ``show()``: afterwards the window has already been
         mapped, so the user watches it jump.
 
+        ``key`` selects which window: the main one by default, or
+        :attr:`DOCS_GEOMETRY` for the documentation viewer.
+
         Returns True only when the saved rect was used as it stands; False
         means nothing was saved, or it was recentred.
         """
-        blob = self._get(self.GEOMETRY, QtCore.QByteArray(),
+        blob = self._get(key or self.GEOMETRY, QtCore.QByteArray(),
                          QtCore.QByteArray)
         if blob.isEmpty() or not window.restoreGeometry(blob):
             return False
@@ -324,8 +332,8 @@ class AppSettings(object):
         recentre(window, rects)
         return False
 
-    def save_geometry(self, window):
-        self._settings.setValue(self.GEOMETRY, window.saveGeometry())
+    def save_geometry(self, window, key=None):
+        self._settings.setValue(key or self.GEOMETRY, window.saveGeometry())
 
     def restore_window_state(self, window):
         """

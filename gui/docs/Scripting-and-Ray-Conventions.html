@@ -1,0 +1,71 @@
+<!-- pyxfocus-docs v1 sha256:8fde27a6795f3b7063edaf11f39043d66b67870adb0805124adbe3f289facd60 -->
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<style type="text/css">
+body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+       font-size: 13px; line-height: 145%; margin: 12px; }
+h1 { font-size: 21px; margin: 2px 0 10px 0; }
+h2 { font-size: 17px; margin: 20px 0 6px 0; }
+h3 { font-size: 14px; margin: 16px 0 4px 0; }
+p, li { margin: 6px 0; }
+a { color: #1a5fb4; }
+code { font-family: Menlo, Consolas, monospace; font-size: 12px;
+       background-color: #f0f0f0; }
+pre { font-family: Menlo, Consolas, monospace; font-size: 12px;
+      background-color: #f4f4f4; padding: 8px; margin: 8px 0; }
+table { border-width: 1px; border-style: solid; border-color: #cccccc;
+        margin: 10px 0; }
+th { background-color: #f0f0f0; padding: 4px 8px; text-align: left; }
+td { padding: 4px 8px; }
+blockquote { color: #555555; margin: 8px 0 8px 16px; }
+</style>
+</head>
+<body>
+<a name="scripting-and-ray-conventions"></a><h1 id="scripting-and-ray-conventions">Scripting and Ray Conventions</h1>
+<a name="the-one-call-api"></a><h2 id="the-one-call-api">The one-call API</h2>
+<p>The GUI is a thin shell over <code>PyXFocus.gui.wolter</code>, which has no Qt dependency and is usable on its own:</p>
+<pre>from PyXFocus.gui.wolter import WolterParams, trace
+
+result = trace(WolterParams(r0=220., z0=8400., offaxis=1.0))
+print(result.hpd_arcsec, result.num_surviving, result.collecting_area)</pre>
+<p><code>sweep</code> (see <strong><a href="Wolter-I-Explorer-GUI.html">Wolter-I Explorer GUI</a></strong> for the tolerancing use case) works the same way without a GUI in the loop.</p>
+<a name="driving-the-raytracer-directly"></a><h2 id="driving-the-raytracer-directly">Driving the raytracer directly</h2>
+<p>Rays are a list of ten arrays, <code>[opd, x, y, z, l, m, n, ux, uy, uz]</code> — path-length delay, position, direction cosines, and the normal of the last surface hit:</p>
+<pre>import numpy as np
+import PyXFocus.sources as sources
+import PyXFocus.surfaces as surf
+import PyXFocus.transformations as tran
+import PyXFocus.analyses as anal
+import PyXFocus.conicsolve as conic
+
+r0, z0, length = 220., 8400., 100.
+
+rin = conic.primrad(z0, r0, z0)
+rout = conic.primrad(z0 + length, r0, z0)
+rays = sources.annulus(rin, rout, 20000)
+tran.transform(rays, 0, 0, -(z0 + length + 500.), 0, 0, 0)
+
+surf.wolterprimary(rays, r0, z0)
+tran.reflect(rays)
+rays = tran.vignette(rays, ind=np.logical_and(rays[3] &gt; z0,
+                                              rays[3] &lt; z0 + length))
+
+surf.woltersecondary(rays, r0, z0)
+tran.reflect(rays)
+rays = tran.vignette(rays, ind=np.logical_and(rays[3] &gt; z0 - length,
+                                              rays[3] &lt; z0))
+
+surf.focusI(rays)
+print('HPD [arcsec]:', anal.hpd(rays) / z0 * 180 / np.pi * 3600)</pre>
+<a name="conventions"></a><h2 id="conventions">Conventions</h2>
+<ul>
+<li>Lengths are in <strong>mm</strong>, angles passed to <code>transform</code> are in <strong>radians</strong>.</li>
+<li>The Wolter focus is at the origin; <code>+z</code> points back toward the sky.</li>
+<li>The primary/secondary node is at <code>z = z0</code> with radius <code>r0</code>, so <code>z0</code> is the focal length.</li>
+<li>The primary spans <code>z0 -&gt; z0 + primary_length</code>; the secondary spans <code>z0 - secondary_length -&gt; z0</code>.</li>
+<li><code>transform</code> moves the <em>coordinate system</em>, not the rays; <code>itransform</code> undoes it.</li>
+</ul>
+<p>See <strong><a href="Architecture-and-Repository-Layout.html">Architecture and Repository Layout</a></strong> for what each module (<code>sources</code>, <code>surfaces</code>, <code>transformations</code>, <code>analyses</code>, <code>conicsolve</code>, ...) is responsible for.</p>
+</body>
+</html>

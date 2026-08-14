@@ -1,0 +1,127 @@
+<!-- pyxfocus-docs v1 sha256:7edcbdd5e95ae4c466d73a14ac2b69b3a76b0455ac249c2446ba5ca8cba4b3e7 -->
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<style type="text/css">
+body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+       font-size: 13px; line-height: 145%; margin: 12px; }
+h1 { font-size: 21px; margin: 2px 0 10px 0; }
+h2 { font-size: 17px; margin: 20px 0 6px 0; }
+h3 { font-size: 14px; margin: 16px 0 4px 0; }
+p, li { margin: 6px 0; }
+a { color: #1a5fb4; }
+code { font-family: Menlo, Consolas, monospace; font-size: 12px;
+       background-color: #f0f0f0; }
+pre { font-family: Menlo, Consolas, monospace; font-size: 12px;
+      background-color: #f4f4f4; padding: 8px; margin: 8px 0; }
+table { border-width: 1px; border-style: solid; border-color: #cccccc;
+        margin: 10px 0; }
+th { background-color: #f0f0f0; padding: 4px 8px; text-align: left; }
+td { padding: 4px 8px; }
+blockquote { color: #555555; margin: 8px 0 8px 16px; }
+</style>
+</head>
+<body>
+<a name="architecture-and-repository-layout"></a><h1 id="architecture-and-repository-layout">Architecture and Repository Layout</h1>
+<a name="module-table"></a><h2 id="module-table">Module table</h2>
+<table>
+<thead>
+<tr>
+<th>Module</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sources.py</code></td>
+<td>Ray sources (point, annulus, converging beam, …)</td>
+</tr>
+<tr>
+<td><code>surfaces.py</code></td>
+<td>Surfaces to trace to (Wolter, conic, sphere, cylinder, …)</td>
+</tr>
+<tr>
+<td><code>transformations.py</code></td>
+<td>Coordinate transforms, reflection, refraction, gratings, vignetting</td>
+</tr>
+<tr>
+<td><code>analyses.py</code></td>
+<td>Centroid, RMS, HPD, wavefront and OPD fitting</td>
+</tr>
+<tr>
+<td><code>conicsolve.py</code></td>
+<td>Wolter-I prescription maths (radii, focus, sag)</td>
+</tr>
+<tr>
+<td><code>lenses.py</code></td>
+<td>Singlet and doublet lenses</td>
+</tr>
+<tr>
+<td><code>gui/wolter.py</code></td>
+<td>One-call Wolter-I trace, plus parameter sweeps</td>
+</tr>
+<tr>
+<td><code>gui/app.py</code></td>
+<td>PyQt5 Wolter-I Explorer</td>
+</tr>
+<tr>
+<td><code>gui/config.py</code></td>
+<td>Versioned JSON configuration format</td>
+</tr>
+<tr>
+<td><code>gui/settings.py</code></td>
+<td>What the app remembers between runs</td>
+</tr>
+<tr>
+<td><code>gui/icon.py</code></td>
+<td>The app icon, drawn programmatically</td>
+</tr>
+<tr>
+<td><code>build_extensions.py</code></td>
+<td>Compiles the Fortran extensions</td>
+</tr>
+<tr>
+<td><code>test_smoke.py</code></td>
+<td>Import and physics checks (no Qt)</td>
+</tr>
+<tr>
+<td><code>test_gui_smoke.py</code></td>
+<td>Settings persistence and window restore (needs PyQt5)</td>
+</tr>
+<tr>
+<td><code>tools/make_icon.py</code></td>
+<td>Builds <code>resources/PyXFocus.icns</code></td>
+</tr>
+<tr>
+<td><code>tools/make_launcher.py</code></td>
+<td>Builds the double-clickable macOS <code>.app</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>surfaces.py</code>, <code>transformations.py</code>, <code>analyses.py</code>, <code>conicsolve.py</code>, and <code>lenses.py</code> are the original PyXFocus engine (Ryan Allured et al.) and currently have no module-level docstrings of their own — their behavior is documented by the ray-array convention in <strong><a href="Scripting-and-Ray-Conventions.html">Scripting and Ray Conventions</a></strong> and by their call sites.</p>
+<a name="guiwolterpy-the-qt-free-core"></a><h2 id="guiwolterpy-the-qt-free-core"><code>gui/wolter.py</code> — the Qt-free core</h2>
+<p>The GUI is deliberately a thin shell over this module, not the other way around. <code>wolter.py</code> wraps the raw PyXFocus call sequence (sources → primary → secondary → focus) into <code>trace(params)</code> and <code>sweep(...)</code>, taking a <code>WolterParams</code> object and handing back rays plus the numbers you actually want (HPD, throughput, collecting area, ...). Because it has no Qt dependency, the exact same trace the GUI runs on every keystroke is usable from a plain script or notebook.</p>
+<p>It also owns <code>MAX_TRANSLATION_MM</code> / <code>MAX_ROTATION_ARCMIN</code> and <code>check_misalignment()</code> — the guard against a real defect in the Fortran secondary solver. See <strong><a href="Known-Limitations.html">Known Limitations</a></strong> for why that guard exists and what it protects against.</p>
+<a name="guiconfigpy-versioned-json-by-design"></a><h2 id="guiconfigpy-versioned-json-by-design"><code>gui/config.py</code> — versioned JSON, by design</h2>
+<p>Configuration files are meant to be opened in an editor, hand-edited, committed next to a paper, and emailed to a collaborator — so the format is deliberately plain and stable: no timestamps, no generator string, ordered keys. <code>diff</code> should answer "did this configuration change", not "was it saved again."</p>
+<p>The module is Qt-free for the same reason <code>wolter.py</code> is: a script or notebook should be able to write a configuration without a GUI. (It isn't dependency-free — importing <code>wolter</code> pulls in the compiled Fortran extensions — only Qt-free.)</p>
+<p>Three layers decide three different questions, kept deliberately separate:</p>
+<ul>
+<li><strong><code>config.py</code></strong> — is this <em>file</em> a usable configuration?</li>
+<li><strong><code>WolterParams.from_dict</code></strong> — is this <em>field</em> a usable value?</li>
+<li><strong><code>ParameterPanel.set_params</code></strong> — will this <em>widget</em> accept it?</li>
+</ul>
+<p>A value outside its allowed range is reported by <code>config.py</code> and loaded verbatim; clamping happens in the panel, where the spin box enforcing the range actually lives. Clamping in <code>config.py</code> would make it useless to a caller with no widget.</p>
+<p>Errors versus notes: a <code>ConfigError</code> means "this is not a configuration" and nothing loads. Everything else is a note appended to a list, and the configuration still loads — a file that quietly loaded as something other than what it claimed is worse than one that refused outright, so callers are expected to surface <code>problems</code> rather than discard them.</p>
+<p>The <code>units</code> block in a saved file is <strong>written and never read</strong>. It exists purely for a human opening the file who wants to know whether <code>sec_rx</code> is arcmin or arcsec — reading it back would mean the module converts units, which it deliberately does not.</p>
+<a name="guisettingspy-the-one-qsettings-consumer"></a><h2 id="guisettingspy-the-one-qsettings-consumer"><code>gui/settings.py</code> — the one QSettings consumer</h2>
+<p>Everything Qt persists between runs goes through <code>AppSettings</code>, the only place in the app that touches <code>QSettings</code>. Two reasons: every key string appears exactly once, so a typo is a bug in one file rather than a value written to <code>window/tab</code> and silently read back from <code>windows/tab</code>; and the underlying <code>QSettings</code> is injectable, so the test suite runs against a temporary INI and can never mutate the developer's real preferences.</p>
+<p><strong>Every read passes an explicit <code>type=</code>.</strong> This isn't defensive style — it's the one bug the module exists to prevent. Measured across a real process boundary (write, quit, relaunch), an INI-backed <code>QSettings</code> returns the <em>string</em> <code>'false'</code> for <code>value('ui/auto_trace')</code> (which is truthy in Python) and the string <code>'3'</code> for <code>value('window/tab')</code>. macOS's native plist backend preserves real types, so an untyped read works by accident on macOS and fails only on Linux or Windows.</p>
+<p><code>session/parameters</code> holds exactly the mapping <code>gui/config.py</code> writes into a configuration file's <code>parameters</code> block — there is no second serializer, so a stale session degrades field-by-field with notes exactly as a stale file does.</p>
+<p>The dependency direction is one-way: <code>settings.py</code> may import <code>config.py</code>; <code>config.py</code> must never import <code>settings.py</code>, because <code>config.py</code> promises to work without PyQt5 installed at all.</p>
+<a name="guiapppy-the-qt-layer"></a><h2 id="guiapppy-the-qt-layer"><code>gui/app.py</code> — the Qt layer</h2>
+<p>Wires the above into windows and widgets: a <code>TraceWorker</code>/<code>SweepWorker</code> pair (Qt threads, so a trace doesn't block the UI), the parameter panel, and the four result views described in <strong><a href="Wolter-I-Explorer-GUI.html">Wolter-I Explorer GUI</a></strong>.</p>
+<a name="a-note-on-examples"></a><h2 id="a-note-on-examples">A note on <code>examples/</code></h2>
+<p>Most scripts under <code>examples/</code> predate the current package layout. They import a module named <code>traces</code> (an older name for this package) or the removed monolithic <code>PyTrace</code> API, and will not run as written. Treat them as reference for how traces were assembled rather than as runnable code; <code>examples/wolterSchwarzschildTest.py</code> uses the current <code>PyXFocus.*</code> imports and does run.</p>
+</body>
+</html>

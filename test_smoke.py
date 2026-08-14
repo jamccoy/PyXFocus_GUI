@@ -688,7 +688,7 @@ def test_qt_free_modules_stay_qt_free():
     import subprocess
     import sys
     for module in ('PyXFocus.gui.wolter', 'PyXFocus.gui.config',
-                   'PyXFocus.gui.optics'):
+                   'PyXFocus.gui.optics', 'PyXFocus.gui.docs_index'):
         subprocess.check_call([
             sys.executable, '-c',
             'import sys, %s; assert "PyQt5" not in sys.modules, '
@@ -1272,6 +1272,66 @@ def test_reproducible():
     a = trace(WolterParams(offaxis=3., seed=42, num_rays=5000))
     b = trace(WolterParams(offaxis=3., seed=42, num_rays=5000))
     assert a.hpd_arcsec == b.hpd_arcsec, 'trace is not reproducible'
+
+
+def test_docs_html_is_current():
+    """
+    The generated documentation matches the Markdown it came from.
+
+    This is the tripwire for the one failure mode a committed build artifact
+    has: editing docs/*.md and shipping without re-running
+    ``tools/build_docs.py``, so the app displays the previous wording. It
+    imports no Markdown parser -- check() re-hashes the sources -- so it
+    still runs in this suite's dependency-free install check.
+    """
+    import os
+    import sys
+    tools = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools')
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import build_docs
+    assert build_docs.check() == 0, (
+        'the bundled docs are stale -- run `python tools/build_docs.py`')
+
+
+def test_docs_pages_and_sources_agree():
+    """Every page in PAGES has a Markdown file, and vice versa."""
+    import os
+    from PyXFocus.gui import docs_index
+
+    listed = set(docs_index.keys())
+    on_disk = set(name[:-3] for name in os.listdir(docs_index.SOURCE_DIR)
+                  if name.endswith('.md'))
+    assert listed == on_disk, (
+        'PAGES and docs/ disagree: only in PAGES %s, only on disk %s'
+        % (sorted(listed - on_disk), sorted(on_disk - listed)))
+
+
+def test_docs_links_resolve():
+    """
+    Every internal documentation link points at a page that exists.
+
+    Catches the two ways a link goes bad here: a wiki-style extension-less
+    target surviving the move out of the wiki (those render as text in the
+    viewer), and a link to a page that has since been renamed.
+    """
+    import re
+    from PyXFocus.gui import docs_index
+
+    known = set(docs_index.keys())
+    bad = []
+    for key in docs_index.keys():
+        with open(docs_index.source_path(key)) as fh:
+            text = fh.read()
+        for target in re.findall(r'\]\(([^)]+)\)', text):
+            if target.startswith(('http://', 'https://', '#')):
+                continue
+            name = target.split('#')[0]
+            if not name.endswith('.md'):
+                bad.append('%s.md -> %r (no .md suffix)' % (key, target))
+            elif name[:-3] not in known:
+                bad.append('%s.md -> %r (no such page)' % (key, target))
+    assert not bad, 'broken documentation links:\n  ' + '\n  '.join(bad)
 
 
 def main():

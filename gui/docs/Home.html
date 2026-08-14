@@ -1,0 +1,44 @@
+<!-- pyxfocus-docs v1 sha256:f3be754c070ddad0731616355795dba2a95561fbbe93973aab4b3f4d2667d59f -->
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<style type="text/css">
+body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+       font-size: 13px; line-height: 145%; margin: 12px; }
+h1 { font-size: 21px; margin: 2px 0 10px 0; }
+h2 { font-size: 17px; margin: 20px 0 6px 0; }
+h3 { font-size: 14px; margin: 16px 0 4px 0; }
+p, li { margin: 6px 0; }
+a { color: #1a5fb4; }
+code { font-family: Menlo, Consolas, monospace; font-size: 12px;
+       background-color: #f0f0f0; }
+pre { font-family: Menlo, Consolas, monospace; font-size: 12px;
+      background-color: #f4f4f4; padding: 8px; margin: 8px 0; }
+table { border-width: 1px; border-style: solid; border-color: #cccccc;
+        margin: 10px 0; }
+th { background-color: #f0f0f0; padding: 4px 8px; text-align: left; }
+td { padding: 4px 8px; }
+blockquote { color: #555555; margin: 8px 0 8px 16px; }
+</style>
+</head>
+<body>
+<a name="pyxfocus_gui"></a><h1 id="pyxfocus_gui">PyXFocus_GUI</h1>
+<p>A PyQt5 graphical front end for <strong>PyXFocus</strong>, the general-purpose raytracing package for X-ray telescope design, plus the cross-platform build and test tooling needed to run it outside Windows.</p>
+<p>This is a fork of <a href="https://github.com/kbuffo/PyXFocus">kbuffo/PyXFocus</a>. The raytracing engine — the Fortran kernels, surfaces, sources, and analysis routines — is the original work of Ryan Allured and contributors, under the MIT licence in <code>LICENSE</code>. This fork adds the <code>gui/</code> package (the "Wolter-I Explorer"), the cross-platform build script, the test suite, and fixes to make the package import off Windows.</p>
+<a name="wiki-contents"></a><h2 id="wiki-contents">Wiki contents</h2>
+<ul>
+<li><strong><a href="Installation.html">Installation</a></strong> — cloning gotchas, requirements, building the Fortran extensions, smoke tests</li>
+<li><strong><a href="Wolter-I-Explorer-GUI.html">Wolter-I Explorer GUI</a></strong> — using the graphical front end: tracing, the four views, parameter sweeps, what it remembers</li>
+<li><strong><a href="Scripting-and-Ray-Conventions.html">Scripting and Ray Conventions</a></strong> — driving PyXFocus from code, the ray-array format, units and coordinate conventions</li>
+<li><strong><a href="Architecture-and-Repository-Layout.html">Architecture and Repository Layout</a></strong> — how the package is organized and why, module by module</li>
+<li><strong><a href="Known-Limitations.html">Known Limitations</a></strong> — the misalignment solver's hang, the collecting-area caveat</li>
+</ul>
+<p>For the fastest path to a working install and a one-paragraph overview, <a href="https://github.com/jamccoy/PyXFocus_GUI/blob/master/README.md">README.md</a> in the repository is still the canonical quick reference; these pages expand on it.</p>
+<a name="upstream-acknowledgement"></a><h2 id="upstream-acknowledgement">Upstream acknowledgement</h2>
+<p>Use of this software for academic and professional optical design work is permitted and encouraged.</p>
+<p>Any publications resulting from use of this software shall include an acknowledgement of PyXFocus. The suggested sentence for the acknowledgements section is:</p>
+<blockquote>
+<p>This work makes use of PyXFocus, an open source Python-based raytracing package.</p>
+</blockquote>
+</body>
+</html>

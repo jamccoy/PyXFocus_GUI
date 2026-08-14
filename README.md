@@ -10,7 +10,8 @@ routines — is the original work of Ryan Allured and contributors, under the
 MIT licence in `LICENSE`. This fork adds the `gui/` package, the build
 script, the test suite, and fixes to make the package import off Windows.
 
-Fuller docs, including an architecture walkthrough, live in the
+Fuller docs, including an architecture walkthrough, live in `docs/` — in the
+app under **Help → Documentation**, and online in the
 [wiki](https://github.com/jamccoy/PyXFocus_GUI/wiki).
 
 ## Upstream acknowledgement
@@ -326,6 +327,40 @@ print('HPD [arcsec]:', anal.hpd(rays) / z0 * 180 / np.pi * 3600)
 * `transform` moves the *coordinate system*, not the rays; `itransform`
   undoes it.
 
+## Documentation
+
+The docs live in `docs/` as Markdown, and that folder is the source of truth.
+They reach you two ways: **Help → Documentation** in the app, reading HTML
+generated from them, and the [wiki](https://github.com/jamccoy/PyXFocus_GUI/wiki),
+which is a published mirror. Edit `docs/`, never the wiki's web editor — the
+next publish overwrites anything typed there.
+
+The app reads generated HTML rather than the Markdown itself because it
+cannot read Markdown. `QTextBrowser.setMarkdown` arrived in Qt 5.14, and the
+interpreter these extensions are built for ships Qt 5.9, so the conversion
+happens ahead of time and the result is committed, the same way
+`resources/PyXFocus.icns` is. After editing any page:
+
+```bash
+pip install markdown        # once; only needed to build, not to read
+python tools/build_docs.py
+```
+
+`python tools/build_docs.py --check` reports whether the committed HTML still
+matches the Markdown, and `test_smoke.py` runs that check, so forgetting to
+rebuild fails the suite instead of silently shipping the previous wording.
+The check itself needs no `markdown` install.
+
+To update the wiki afterwards:
+
+```bash
+python tools/publish_wiki.py --check    # what would change
+python tools/publish_wiki.py            # write it, then commit in the wiki checkout
+```
+
+It writes files and stops; committing and pushing the wiki stays a separate,
+deliberate step.
+
 ## Repository layout
 
 | Module | Purpose |
@@ -346,6 +381,12 @@ print('HPD [arcsec]:', anal.hpd(rays) / z0 * 180 / np.pi * 3600)
 | `gui/config.py` | Versioned JSON configuration format |
 | `gui/settings.py` | What the app remembers between runs |
 | `gui/icon.py` | The app icon, drawn programmatically |
+| `gui/docs_index.py` | Which documentation pages exist, and where they live |
+| `gui/docview.py` | The Help → Documentation viewer |
+| `docs/` | The documentation itself, in Markdown — the source of truth |
+| `gui/docs/` | HTML generated from `docs/`, committed, what the viewer reads |
+| `tools/build_docs.py` | Renders `docs/*.md` → `gui/docs/*.html` |
+| `tools/publish_wiki.py` | Copies `docs/*.md` into a GitHub wiki checkout |
 | `tools/make_icon.py` | Builds `resources/PyXFocus.icns` |
 | `tools/make_launcher.py` | Builds the double-clickable macOS `.app` |
 

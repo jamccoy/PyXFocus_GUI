@@ -1,0 +1,59 @@
+<!-- pyxfocus-docs v1 sha256:91cb1ee76ad0a29b220b4e0f95fa09d7b56192986479f769522563ec2aaa142b -->
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<style type="text/css">
+body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+       font-size: 13px; line-height: 145%; margin: 12px; }
+h1 { font-size: 21px; margin: 2px 0 10px 0; }
+h2 { font-size: 17px; margin: 20px 0 6px 0; }
+h3 { font-size: 14px; margin: 16px 0 4px 0; }
+p, li { margin: 6px 0; }
+a { color: #1a5fb4; }
+code { font-family: Menlo, Consolas, monospace; font-size: 12px;
+       background-color: #f0f0f0; }
+pre { font-family: Menlo, Consolas, monospace; font-size: 12px;
+      background-color: #f4f4f4; padding: 8px; margin: 8px 0; }
+table { border-width: 1px; border-style: solid; border-color: #cccccc;
+        margin: 10px 0; }
+th { background-color: #f0f0f0; padding: 4px 8px; text-align: left; }
+td { padding: 4px 8px; }
+blockquote { color: #555555; margin: 8px 0 8px 16px; }
+</style>
+</head>
+<body>
+<a name="installation"></a><h1 id="installation">Installation</h1>
+<a name="the-folder-name-matters"></a><h2 id="the-folder-name-matters">The folder name matters</h2>
+<p><strong>The folder must be named <code>PyXFocus</code>, not <code>PyXFocus_GUI</code>.</strong> The package is imported as <code>import PyXFocus.surfaces</code>, so the directory Python sees has to be called <code>PyXFocus</code>, and its <strong>parent</strong> must be on your Python path. Since this repository is named <code>PyXFocus_GUI</code>, a plain <code>git clone</code> would produce a <code>PyXFocus_GUI/</code> folder and every import would fail. Clone into an explicit target instead:</p>
+<pre>git clone https://github.com/jamccoy/PyXFocus_GUI.git PyXFocus
+cd PyXFocus</pre>
+<p>(The proper fix is to make the project <code>pip install</code>-able so the folder name stops mattering; until then, the explicit clone target is the workaround.)</p>
+<a name="1-requirements"></a><h2 id="1-requirements">1. Requirements</h2>
+<ul>
+<li>Python 3, numpy, scipy, matplotlib</li>
+<li><code>gfortran</code> (macOS: <code>brew install gcc</code>; Debian/Ubuntu: <code>apt install gfortran</code>)</li>
+<li>PyQt5, only if you want the GUI</li>
+</ul>
+<a name="2-build-the-fortran-extensions"></a><h2 id="2-build-the-fortran-extensions">2. Build the Fortran extensions</h2>
+<p>The repository ships pre-built <strong>Windows</strong> <code>.dll</code> files only. On macOS and Linux you must compile the Fortran modules once:</p>
+<pre>python build_extensions.py</pre>
+<p>This builds six extension modules (<code>surfacesf</code>, <code>woltsurf</code>, <code>zernsurf</code>, <code>transformationsf</code>, <code>reconstruct</code>, <code>specialfunctions</code>). It calls f2py through <code>python -m numpy.f2py</code>, which guarantees they are built for the same interpreter that will import them — if you build with one Python and import with another, the modules will appear to be missing.</p>
+<a name="3-check-it-worked"></a><h2 id="3-check-it-worked">3. Check it worked</h2>
+<p>From the directory <em>containing</em> the <code>PyXFocus</code> folder:</p>
+<pre>python -m PyXFocus.test_smoke</pre>
+<p>All checks should pass. These verify the package imports and that the physics is still right (an on-axis Wolter-I focuses to a point, off-axis coma grows with field angle, and so on). This suite imports no Qt, so it works as an install check whether or not you want the GUI.</p>
+<p>If you are using the GUI there is a second suite covering the Qt layer:</p>
+<pre>python -m PyXFocus.test_gui_smoke</pre>
+<a name="optional-dependency"></a><h2 id="optional-dependency">Optional dependency</h2>
+<p>A few wavefront-fitting routines (<code>OPDtoZernike</code>, <code>OPDtoLegendre</code>, <code>wavefront</code>, and the <code>zernsurf</code> surfaces) need the external <code>utilities</code> imaging package:</p>
+<pre>pip install git+https://github.com/rallured/utilities.git</pre>
+<p>It is imported lazily, so <strong>everything else works without it</strong>. If you call a function that needs it, you get an <code>ImportError</code> naming the package and the install command.</p>
+<a name="a-double-clickable-app-macos"></a><h2 id="a-double-clickable-app-macos">A double-clickable app (macOS)</h2>
+<p>To launch the GUI from Finder or the Dock instead of a terminal, build a launcher once:</p>
+<pre>python tools/make_icon.py       # only needed again if the artwork changes
+python tools/make_launcher.py</pre>
+<p>This creates a small <code>.app</code> bundle whose launch script has this machine's interpreter path and this repository's location baked in. It is a <strong>local build artifact</strong>, not something that can be committed or shared: rebuild it if the repository moves or you switch interpreters, and <code>python tools/make_launcher.py --check</code> will tell you if it has gone stale.</p>
+<p>If it fails to start, the failure shows up as a dialog rather than a bounced Dock icon, and the details land in <code>~/Library/Logs/PyXFocus.log</code>.</p>
+<p>Next: <strong><a href="Wolter-I-Explorer-GUI.html">Wolter-I Explorer GUI</a></strong> or <strong><a href="Scripting-and-Ray-Conventions.html">Scripting and Ray Conventions</a></strong>.</p>
+</body>
+</html>

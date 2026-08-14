@@ -828,6 +828,105 @@ def _settle(rounds=80):
         APP.processEvents()
 
 
+# --------------------------------------------------------------------------
+# The documentation viewer
+# --------------------------------------------------------------------------
+
+class _LinkRecorder(object):
+    """Stands in for QDesktopServices.openUrl, so no browser opens."""
+
+    def __init__(self):
+        self.opened = []
+
+    def __call__(self, url):
+        self.opened.append(url.toString())
+        return True
+
+
+def _docs_window():
+    """A viewer that can never reach a real browser. Never shown."""
+    from PyXFocus.gui import docview
+    recorder = _LinkRecorder()
+    return docview.DocsWindow(open_external=recorder), recorder
+
+
+def test_docs_window_lists_every_page():
+    """The contents list is PAGES, and the first page actually loaded."""
+    from PyXFocus.gui import docs_index
+    window, _ = _docs_window()
+    assert window.contents.count() == len(docs_index.PAGES)
+    assert window.current_key() == docs_index.PAGES[0].key
+    assert window.browser.toPlainText().strip(), 'the first page is blank'
+
+
+def test_docs_render_as_utf8():
+    """
+    Non-ASCII survives the trip through QTextBrowser.
+
+    The bug this caught: a generated page with no charset declaration is
+    decoded as Latin-1, so every em dash renders as 'â€”'. It is silent --
+    nothing raises, the page loads, the text is just wrong -- and these
+    pages are full of em dashes, so it disfigured most of a paragraph.
+    """
+    window, _ = _docs_window()
+    text = window.browser.toPlainText()
+    assert '—' in text, 'em dashes did not survive: encoding regressed'
+    assert 'â' not in text, 'mojibake in the rendered page'
+
+
+def test_docs_internal_link_navigates_in_place():
+    """An internal link changes page and moves the contents selection."""
+    window, recorder = _docs_window()
+    window._on_anchor(QtCore.QUrl('Installation.html'))
+    assert window.current_key() == 'Installation'
+    selected = window.contents.currentItem().data(QtCore.Qt.UserRole)
+    assert selected == 'Installation', (
+        'the contents list did not follow the link, it says %r' % selected)
+    assert not recorder.opened, 'an internal link escaped to a browser'
+
+
+def test_docs_external_link_leaves_the_page_alone():
+    """
+    An http link opens outside and does NOT navigate the viewer.
+
+    The failure this guards against is setOpenLinks(True): Qt would try to
+    load the remote page into the QTextBrowser, which renders as a blank
+    document rather than an error.
+    """
+    window, recorder = _docs_window()
+    before = window.current_key()
+    window._on_anchor(QtCore.QUrl('https://example.com/thing'))
+    assert recorder.opened == ['https://example.com/thing']
+    assert window.current_key() == before, 'an external link changed the page'
+
+
+def test_docs_back_button_tracks_history():
+    """Back is dead until there is somewhere to go back to."""
+    window, _ = _docs_window()
+    assert not window.back_button.isEnabled()
+    window.show_page('Installation')
+    APP.processEvents()
+    assert window.back_button.isEnabled(), (
+        'setSource did not record history -- Back can never work')
+
+
+def test_help_menu_offers_documentation():
+    """The menu bar exists, and the help key is wired to it."""
+    from PyQt5 import QtGui
+    from PyXFocus.gui import app as app_module
+
+    window = app_module.MainWindow(store=_store())
+    titles = [a.text() for a in window.menuBar().actions()]
+    assert any('Help' in title for title in titles), (
+        'no Help menu, found %r' % titles)
+
+    help_menu = window.menuBar().actions()[0].menu()
+    actions = [a for a in help_menu.actions() if a.text() == 'Documentation']
+    assert actions, 'no Documentation action under Help'
+    assert actions[0].shortcut() == QtGui.QKeySequence(
+        QtGui.QKeySequence.HelpContents), 'Documentation is not on the help key'
+
+
 def main():
     global APP
     APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)

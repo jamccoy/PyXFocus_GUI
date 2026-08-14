@@ -18,8 +18,10 @@ import sys
 import traceback
 
 import numpy as np
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 
+from PyXFocus.gui import docs_index
+from PyXFocus.gui import docview
 from PyXFocus.gui import settings
 from PyXFocus.gui import wolter
 from PyXFocus.gui.tabs import PlotTabs
@@ -339,6 +341,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.splitter.setStretchFactor(1, 1)
         self.setCentralWidget(self.splitter)
 
+        #: Held rather than local: DocsWindow is non-modal, and a non-modal
+        #: dialog with no surviving reference is collected and disappears.
+        self._docs_window = None
+        self._build_menus()
+
         self.statusBar().showMessage('Ready')
 
         # Coalesce rapid edits into one trace.
@@ -497,6 +504,81 @@ class MainWindow(QtWidgets.QMainWindow):
         self.metrics.clear()
         self.statusBar().showMessage('Trace failed')
         QtWidgets.QMessageBox.critical(self, 'Trace failed', message)
+
+    # -- menus -------------------------------------------------------------
+
+    def _build_menus(self):
+        """
+        The menu bar. Help only, for now.
+
+        The trace controls stay the QPushButtons they have always been; this
+        adds a home for the things that have nowhere else to live, not a
+        second way to do what the buttons already do. (Two docstrings in
+        gui/tabs still refer to a "Run menu" that does not exist -- that is
+        a separate change, not this one.)
+
+        WINDOW_STATE_VERSION is deliberately not bumped: saveState() covers
+        toolbars and docks, and a menu bar is neither, so no saved blob is
+        invalidated by this.
+        """
+        help_menu = self.menuBar().addMenu('&Help')
+
+        docs_action = QtWidgets.QAction('Documentation', self)
+        docs_action.setShortcut(QtGui.QKeySequence.HelpContents)
+        docs_action.triggered.connect(self.show_docs)
+        help_menu.addAction(docs_action)
+
+        wiki_action = QtWidgets.QAction('View Wiki Online', self)
+        wiki_action.setToolTip(docs_index.WIKI_URL)
+        wiki_action.triggered.connect(self.open_wiki)
+        help_menu.addAction(wiki_action)
+
+        help_menu.addSeparator()
+
+        about_action = QtWidgets.QAction('About Wolter-I Explorer', self)
+        # Qt spots an action whose text starts with "About" and relocates it
+        # into the macOS application menu. That is the right home for it, so
+        # this is left alone deliberately rather than pinned with NoRole --
+        # but it does mean it will not appear under Help on a Mac.
+        about_action.setMenuRole(QtWidgets.QAction.AboutRole)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+
+    def show_docs(self):
+        """Open (or re-raise) the bundled documentation."""
+        if self._docs_window is None:
+            self._docs_window = docview.DocsWindow(self)
+            self.settings.restore_geometry(
+                self._docs_window, key=settings.AppSettings.DOCS_GEOMETRY)
+            self._docs_window.finished.connect(self._on_docs_closed)
+        self._docs_window.show()
+        self._docs_window.raise_()
+        self._docs_window.activateWindow()
+
+    def _on_docs_closed(self, result):
+        """Remember where the docs window was before letting go of it."""
+        if self._docs_window is None:
+            return
+        try:
+            self.settings.save_geometry(
+                self._docs_window, key=settings.AppSettings.DOCS_GEOMETRY)
+        except Exception:
+            pass
+        self._docs_window = None
+
+    def open_wiki(self):
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl(docs_index.WIKI_URL))
+
+    def show_about(self):
+        QtWidgets.QMessageBox.about(
+            self, 'About Wolter-I Explorer',
+            '<b>PyXFocus — Wolter-I Explorer</b>'
+            '<p>A PyQt5 front end for PyXFocus, the raytracing package for '
+            'X-ray telescope design.</p>'
+            '<p>The raytracing engine is the work of Ryan Allured and '
+            'contributors, under the MIT licence.</p>'
+            '<p><a href="%s">%s</a></p>' % (docs_index.WIKI_URL,
+                                            docs_index.WIKI_URL))
 
     def show_script(self):
         script = wolter.script_for(self.panel.params())
