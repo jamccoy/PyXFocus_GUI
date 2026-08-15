@@ -1,11 +1,10 @@
 """
-A matplotlib canvas that paints only when it can be seen.
+A pane that paints only when it can be seen.
 
 This is inheritance for *reuse*, not an interface: nothing in the registry
-checks for this class, and a tab drawing with something other than
-matplotlib is expected not to use it.
+checks for these classes, and a tab is free to draw with whatever it likes.
 
-What it exists to hold is the one piece of state every drawing tab gets
+What they exist to hold is the one piece of state every drawing tab gets
 subtly wrong on its own -- "there is a newer result than the pixels on
 screen". Before it, every trace repainted all three plot tabs including the
 ones nobody was looking at, and the spot tab scatters up to 500 000
@@ -15,6 +14,12 @@ It also collapses drawing and clearing into a single entry point per tab.
 The layout tab previously had two -- ``_draw_layout`` removed its zoom
 inset and ``clear_all`` did not -- which is the shape a bug grows in even
 where, as it happens, matplotlib 3.3.2 cleaned up after it anyway.
+
+The gate itself is :class:`PaintGate` and knows nothing about matplotlib;
+:class:`FigurePane` adds the figure, canvas and toolbar.  They are separate
+because the 3D tab renders with OpenGL and has no canvas to speak of, and
+duplicating a dirty flag is exactly how two tabs drift into disagreeing
+about when a repaint is owed.
 """
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
@@ -23,17 +28,21 @@ from matplotlib.figure import Figure
 from PyQt5 import QtWidgets
 
 
-class FigurePane(QtWidgets.QWidget):
-    """A toolbar, a canvas, and a dirty flag."""
+class PaintGate(object):
+    """
+    "There is a newer result than the pixels", without a canvas.
 
-    def __init__(self, parent=None):
-        super(FigurePane, self).__init__(parent)
-        self.figure = Figure(figsize=(5, 4), tight_layout=True)
-        self.canvas = FigureCanvasQTAgg(self.figure)
-        box = QtWidgets.QVBoxLayout(self)
-        box.addWidget(NavigationToolbar2QT(self.canvas, self))
-        box.addWidget(self.canvas, 1)
+    A mixin, and ``QtWidgets.QWidget`` must come *last* in the bases: PyQt5
+    takes the C++ class from the last Qt base, and :meth:`showEvent` relies
+    on plain cooperative ``super()`` to reach it.
 
+    There is deliberately no ``__init__`` here.  A cooperative one across a
+    plain object and a QWidget buys nothing under PyQt5's metaclass rules,
+    so subclasses call :meth:`_init_paint_gate` explicitly and it is
+    obvious in each of them that they did.
+    """
+
+    def _init_paint_gate(self):
         self._result = None
         #: The result the pixels currently correspond to. Compared by
         #: identity, not equality: two traces are always two objects, and
@@ -64,7 +73,7 @@ class FigurePane(QtWidgets.QWidget):
     # -- painting ----------------------------------------------------------
 
     def showEvent(self, event):
-        super(FigurePane, self).showEvent(event)
+        super(PaintGate, self).showEvent(event)
         self.flush()
 
     def flush(self):
@@ -80,7 +89,7 @@ class FigurePane(QtWidgets.QWidget):
         if self._painted is self._result and self.paints:
             return
         self._draw(self._result)
-        self.canvas.draw_idle()
+        self._present()
         self._painted = self._result
         self.paints += 1
 
@@ -96,6 +105,14 @@ class FigurePane(QtWidgets.QWidget):
         self._painted = None
         self.flush()
 
+    def _present(self):
+        """
+        Put what :meth:`_draw` produced on screen.
+
+        Nothing for a renderer that paints during ``_draw``; a
+        ``draw_idle`` for one that fills a canvas and schedules it.
+        """
+
     def _draw(self, result):
         """
         Subclass hook. ``result`` is None for "clear yourself".
@@ -106,3 +123,19 @@ class FigurePane(QtWidgets.QWidget):
         blank axes the old ``clear_all`` produced.
         """
         raise NotImplementedError
+
+
+class FigurePane(PaintGate, QtWidgets.QWidget):
+    """A toolbar, a canvas, and a dirty flag."""
+
+    def __init__(self, parent=None):
+        super(FigurePane, self).__init__(parent)
+        self.figure = Figure(figsize=(5, 4), tight_layout=True)
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        box = QtWidgets.QVBoxLayout(self)
+        box.addWidget(NavigationToolbar2QT(self.canvas, self))
+        box.addWidget(self.canvas, 1)
+        self._init_paint_gate()
+
+    def _present(self):
+        self.canvas.draw_idle()

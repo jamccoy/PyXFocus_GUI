@@ -820,6 +820,46 @@ def test_clearing_a_pane_is_a_paint():
     assert pane.drawn == [result, None], pane.drawn
 
 
+def test_the_paint_gate_works_without_a_canvas():
+    """
+    The gate is about results, not about matplotlib.
+
+    The 3D tab renders with OpenGL and has no figure, canvas or toolbar, so
+    a gate that reached for one would leave that tab either duplicating the
+    dirty flag or doing without it. This is what catches a future edit
+    quietly re-coupling the two.
+    """
+    from PyQt5 import QtWidgets
+    from PyXFocus.gui.tabs.pane import PaintGate
+
+    class NoCanvas(PaintGate, QtWidgets.QWidget):
+        def __init__(self):
+            super(NoCanvas, self).__init__()
+            self._init_paint_gate()
+            self.drawn = []
+            self.presented = 0
+
+        def _draw(self, result):
+            self.drawn.append(result)
+
+        def _present(self):
+            self.presented += 1
+
+    pane = NoCanvas()
+    _KEEP_ALIVE.append(pane)
+    first, second = object(), object()
+    pane.set_result(first)
+    assert pane.paints == 0, 'a hidden pane painted %d times' % pane.paints
+    pane.set_result(second)
+    pane.flush()
+    assert pane.drawn == [second], pane.drawn
+    assert pane.presented == 1, 'flush did not present what it drew'
+
+    pane.force_repaint()
+    assert pane.drawn == [second, second], pane.drawn
+    assert pane.paints == 2
+
+
 def _settle(rounds=80):
     """Run the event loop long enough for queued work to complete."""
     for _ in range(rounds):
