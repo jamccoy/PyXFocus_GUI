@@ -27,6 +27,16 @@ import tempfile
 import traceback
 
 import numpy as np
+
+#: Force the matplotlib 3D renderer for the whole suite, before anything
+#: imports the tab package.  A GLViewWidget under QT_QPA_PLATFORM=offscreen
+#: reports "Failed to create context" and then draws nothing, so every
+#: content assertion against the 3D tab would pass vacuously on a machine
+#: with pyqtgraph installed and fail loudly on one without.  The choice
+#: itself is tested by test_backend_selection_is_a_pure_function, which
+#: needs no context because it is a function of two arguments.
+os.environ['PYXFOCUS_3D_BACKEND'] = 'matplotlib'
+
 from PyQt5 import QtCore, QtWidgets
 
 from PyXFocus.gui import config
@@ -528,18 +538,127 @@ def _drawn_3d(**kwargs):
 
 def test_the_3d_tab_draws_rays_as_one_collection():
     """
-    Forty polylines, one artist.
+    Every ray, one artist.
 
     mplot3d re-projects the whole scene per artist on every mouse move, so
     this is a frame-rate contract rather than tidiness.
+
+    The scene hands over segments as vertex *pairs* -- which is what GL's
+    'lines' mode consumes, and what lets a ray be coloured by the order it
+    was diffracted into -- so the count here is one per (stage gap, ray),
+    not one per ray.
     """
     from PyXFocus.gui.tabs.layout3d import RAYS_GID
     tab, result = _drawn_3d(offaxis=2.)
     rays = [c for c in tab.ax.collections if c.get_gid() == RAYS_GID]
     assert len(rays) == 1, 'expected exactly one ray collection, got %d' % len(rays)
-    assert len(rays[0]._segments3d) == result.path_x.shape[1], (
-        'drew %d polylines for %d recorded paths'
-        % (len(rays[0]._segments3d), result.path_x.shape[1]))
+    stages, drawn = result.path_x.shape
+    assert len(rays[0]._segments3d) == (stages - 1) * drawn, (
+        'drew %d segments for %d paths of %d stages'
+        % (len(rays[0]._segments3d), drawn, stages))
+
+
+def test_backend_selection_is_a_pure_function():
+    """
+    Which 3D renderer gets built, decided without building one.
+
+    A GL context is the one thing this environment cannot provide, so the
+    choice is separated from the construction and only the choice is tested
+    here.  The garbage case matters: a typo in an environment variable must
+    cost you the GPU, not the tab.
+    """
+    from PyXFocus.gui.tabs import select_backend
+    cases = {
+        ('auto', True): 'opengl',
+        ('auto', False): 'matplotlib',
+        ('opengl', True): 'opengl',
+        ('opengl', False): 'matplotlib',      # asked for, not available
+        ('matplotlib', True): 'matplotlib',   # available, not wanted
+        ('matplotlib', False): 'matplotlib',
+        ('openGL', True): 'opengl',           # typo falls back to auto
+        ('', False): 'matplotlib',
+    }
+    for (requested, available), expected in cases.items():
+        got = select_backend(requested, available)
+        assert got == expected, (
+            'select_backend(%r, %r) gave %r, expected %r'
+            % (requested, available, got, expected))
+
+
+def test_the_3d_tab_is_built_for_the_selected_backend():
+    """
+    The registry builds whichever renderer was chosen, under one key.
+
+    TABS is append only -- the active tab is persisted as an integer index
+    -- so the 3D renderer swap has to happen behind the existing 'layout3d'
+    entry rather than as a sixth tab.
+    """
+    from PyXFocus.gui import tabs as T
+
+    assert [spec.key for spec in T.TABS].index('layout3d') == 4, (
+        'the 3D tab moved; a persisted tab index now reopens elsewhere')
+
+    saved = os.environ.get(T.BACKEND_VAR)
+    try:
+        os.environ[T.BACKEND_VAR] = 'matplotlib'
+        assert T.layout3d_class() is T.layout3d.Layout3DTab
+
+        os.environ[T.BACKEND_VAR] = 'opengl'
+        chosen = T.layout3d_class()
+        if T.opengl_available():
+            from PyXFocus.gui.tabs import layout3dgl
+            assert chosen is layout3dgl.GLLayout3DTab
+        else:
+            # Not a skip: without pyqtgraph the promise is that the tab is
+            # still there, drawn by matplotlib.
+            assert chosen is T.layout3d.Layout3DTab
+    finally:
+        if saved is None:
+            del os.environ[T.BACKEND_VAR]
+        else:
+            os.environ[T.BACKEND_VAR] = saved
+
+
+def test_the_gl_camera_frames_the_whole_scene():
+    """
+    The default view fits the box, from every preset and any window shape.
+
+    Both halves of this have been wrong: pyqtgraph's fov is the *horizontal*
+    one, so framing on it leaves a tall scene running off the top; and the
+    box is 2.2 times taller than wide, so a distance that suits the side
+    view is far too close looking down the axis.  A default view that has to
+    be rescued with the scroll wheel is the complaint this renderer exists
+    to answer, so it is asserted rather than eyeballed.
+
+    Needs pyqtgraph importable, but no GL context: fit_distance is
+    arithmetic.
+    """
+    from PyXFocus.gui import tabs as T
+    if not T.opengl_available():
+        return
+    import numpy as np
+    from PyXFocus.gui.tabs import layout3dgl as G
+
+    corners = G._corners(G.SCENE_BOX)
+    for width, height in ((1200, 700), (700, 1200), (900, 900)):
+        for name, angles in G.CAMERA_PRESETS.items():
+            distance = G.fit_distance(width, height, **angles)
+            elev = np.radians(angles['elevation'])
+            azim = np.radians(angles['azimuth'])
+            right = np.array([-np.sin(azim), np.cos(azim), 0.])
+            up = np.array([-np.sin(elev) * np.cos(azim),
+                           -np.sin(elev) * np.sin(azim), np.cos(elev)])
+            half_w = np.tan(np.radians(G.FOV / 2.)) * distance
+            half_h = half_w * height / float(width)
+            assert np.abs(corners.dot(right)).max() <= half_w, (
+                '%s overflows a %dx%d window sideways' % (name, width, height))
+            assert np.abs(corners.dot(up)).max() <= half_h, (
+                '%s overflows a %dx%d window vertically'
+                % (name, width, height))
+
+    # A degenerate viewport must still give a usable number, because the
+    # camera is framed once at construction, before any layout has happened.
+    assert G.fit_distance(0, 0) > 0.
 
 
 def test_the_3d_tab_blanks_on_none():
@@ -664,11 +783,12 @@ def test_the_3d_tab_draws_every_shell():
     """
     A nest draws without the tab learning anything about nesting.
 
-    The whole point of the geometry contract: the tab asks the system for
-    patches and never counts shells. The vertex budget must still hold, or
-    rotating a twenty-shell design becomes a slideshow.
+    The whole point of the geometry contract: the tab asks the scene for
+    items and never counts shells.  The vertex budget that keeps a
+    twenty-shell design rotatable is asserted in test_smoke, against the
+    scene rather than against the artists.
     """
-    from PyXFocus.gui.tabs.layout3d import MAX_VERTICES, RAYS_GID
+    from PyXFocus.gui.tabs.layout3d import RAYS_GID
 
     tab_one, _ = _drawn_3d(num_shells=1)
     surfaces_one = len([c for c in tab_one.ax.collections
@@ -680,13 +800,6 @@ def test_the_3d_tab_draws_every_shell():
     assert surfaces_many > surfaces_one, (
         'six shells drew %d surfaces, one shell drew %d'
         % (surfaces_many, surfaces_one))
-
-    from PyXFocus.gui.tabs.layout3d import azimuth_for, N_AXIAL
-    from PyXFocus.gui.wolter import WolterParams as P, build_system
-    system = build_system(P(num_shells=20))
-    total = sum(p.x.size for p in system.patches(
-        n_azimuth=azimuth_for(len(system.elements)), num=N_AXIAL))
-    assert total <= MAX_VERTICES, '20 shells is %d vertices' % total
 
 
 def test_settings_session_migrates_an_older_version():

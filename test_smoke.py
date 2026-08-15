@@ -688,7 +688,8 @@ def test_qt_free_modules_stay_qt_free():
     import subprocess
     import sys
     for module in ('PyXFocus.gui.wolter', 'PyXFocus.gui.config',
-                   'PyXFocus.gui.optics', 'PyXFocus.gui.docs_index'):
+                   'PyXFocus.gui.optics', 'PyXFocus.gui.scene3d',
+                   'PyXFocus.gui.docs_index'):
         subprocess.check_call([
             sys.executable, '-c',
             'import sys, %s; assert "PyQt5" not in sys.modules, '
@@ -874,6 +875,200 @@ def test_the_system_knows_where_its_optics_are():
     zlo, zhi = build_system(params).mirror_z_range()
     assert zlo == params.z0 - params.secondary_length
     assert zhi == params.z0 + params.primary_length
+
+
+def _scene(backend='matplotlib', params=None, **options):
+    """A built scene and the result it was built from, with no Qt anywhere."""
+    from PyXFocus.gui import scene3d
+    from PyXFocus.gui.wolter import WolterParams, build_system, trace
+    params = params or WolterParams(num_rays=500)
+    result = trace(params)
+    system = build_system(params)
+    opts = scene3d.SceneOptions.for_backend(backend, **options)
+    return scene3d.build_scene(system, result, opts), result
+
+
+def _ray_item(scene):
+    items = [i for i in scene.items if i.kind == 'ray']
+    assert len(items) == 1, 'expected one ray item, got %d' % len(items)
+    return items[0]
+
+
+def test_scene_ray_segments_match_the_recorded_paths():
+    """
+    The vertex interleave is the thing most easily got subtly wrong.
+
+    'lines' consumes vertices in pairs, and the colour array is built by a
+    separate tile-and-repeat that has to agree with this ordering exactly.
+    Get it wrong and every ray is drawn from its own start to a neighbour's
+    end -- which still looks like a plausible telescope.
+    """
+    import numpy as np
+    scene, result = _scene()
+    item = _ray_item(scene)
+    stages, rays = result.path_x.shape
+    assert item.verts.shape == (2 * (stages - 1) * rays, 3), item.verts.shape
+
+    heads = item.verts[0::2].reshape(stages - 1, rays, 3)
+    tails = item.verts[1::2].reshape(stages - 1, rays, 3)
+    for axis, recorded in enumerate((result.path_x, result.path_y,
+                                     result.path_z)):
+        assert np.array_equal(heads[..., axis], recorded[:-1]), (
+            'segment heads do not match axis %d' % axis)
+        assert np.array_equal(tails[..., axis], recorded[1:]), (
+            'segment tails do not match axis %d' % axis)
+
+
+def test_scene_keeps_x_and_y_to_the_same_scale():
+    """
+    Azimuth, tilt and decentre all live in the x-y plane.
+
+    Only z may be compressed; squashing x against y would destroy the very
+    thing this view exists to show.  Asserted with ``==``, not a tolerance:
+    they are the same number by construction or the view is wrong.
+    """
+    scene, _ = _scene()
+    sx, sy, sz = scene.view.scale
+    assert sx == sy, 'x and y scales differ: %r vs %r' % (sx, sy)
+    assert sz != sx, 'z was not compressed at all'
+
+
+def test_scene_compression_matches_the_span():
+    """
+    The reported squash is the real ratio of the two scales.
+
+    An unlabelled 38:1 compression makes a Wolter-I look like a Cassegrain,
+    so the number a view prints has to be the number it drew.
+    """
+    scene, _ = _scene()
+    sx, _, sz = scene.view.scale
+    assert abs(scene.view.compression - sx / sz) < 1e-9, (
+        'reported x%.3f, drew x%.3f' % (scene.view.compression, sx / sz))
+    assert scene.view.compression > 1.5, (
+        'premise changed: the default design no longer needs compressing')
+    assert any('compressed' in note for note in scene.notes), (
+        'a compressed z went unmentioned: %r' % (scene.notes,))
+
+
+def test_mirrors_only_narrows_z_without_clipping_the_optics():
+    """Zoom on the optics, without the viewer knowing what the optics are."""
+    from PyXFocus.gui.wolter import WolterParams, build_system
+    params = WolterParams(num_rays=500)
+    whole, _ = _scene(params=params)
+    zoomed, _ = _scene(params=params, mirrors_only=True)
+
+    def span(scene):
+        _, zlo, zhi = scene.view.span_mm
+        return zlo, zhi
+
+    wide, near = span(whole), span(zoomed)
+    assert (near[1] - near[0]) < (wide[1] - wide[0]), (
+        'mirrors-only did not narrow the z range: %r -> %r' % (wide, near))
+    zlo, zhi = build_system(params).mirror_z_range()
+    assert near[0] <= zlo and near[1] >= zhi, (
+        'mirrors-only clipped the optics: %r excludes %r' % (near, (zlo, zhi)))
+
+
+def test_mirrors_only_trims_rays_at_the_span():
+    """
+    Zoomed on the optics, a ray is cut where it leaves the view.
+
+    matplotlib gets this from its axis limits; GL has no limits to clip
+    against, so the scene has to do it or eight metres of ray is drawn
+    across a view scaled to two hundred millimetres of mirror.  Trimmed and
+    not merely dropped: the run from the source to the primary overlaps the
+    span at one end, so dropping whole segments would keep all of it.
+    """
+    import numpy as np
+    from PyXFocus.gui.scene3d import _clip_to_z
+    lo, hi = 5900., 6100.
+    head = np.array([[0., 0., 0.],        # crosses the whole span
+                     [0., 0., 5950.],     # starts inside, leaves the top
+                     [0., 0., -100.],     # nowhere near it
+                     [1., 2., 6000.]])    # wholly inside
+    tail = np.array([[0., 0., 9000.],
+                     [0., 0., 6500.],
+                     [0., 0., -50.],
+                     [1., 2., 6000.]])
+    clipped_head, clipped_tail, keep = _clip_to_z(head, tail, (lo, hi))
+
+    assert keep.tolist() == [True, True, False, True], keep
+    for ends in (clipped_head, clipped_tail):
+        assert (ends[:, 2] >= lo - 1e-9).all() and (ends[:, 2] <= hi + 1e-9).all(), (
+            'a clipped end left the span: %r' % (ends[:, 2],))
+    assert np.allclose(clipped_head[0, 2], lo), 'the crossing ray was not cut'
+    assert np.allclose(clipped_tail[0, 2], hi)
+    assert np.allclose(clipped_head[2], [1., 2., 6000.]), (
+        'a segment already inside the span was moved')
+
+
+def test_scene_vertex_budget_holds_for_twenty_shells():
+    """
+    A twenty-shell nest must stay rotatable.
+
+    matplotlib re-projects every vertex in Python on every mouse move, so
+    its budget is a frame rate.  GL uploads once per result and rotates with
+    a matrix, which is why it is allowed ten times as many.
+    """
+    from PyXFocus.gui import scene3d
+    from PyXFocus.gui.wolter import WolterParams, build_system
+    system = build_system(WolterParams(num_shells=20))
+    for backend, budget in (('matplotlib', scene3d.MAX_VERTICES_MPL),
+                            ('opengl', scene3d.MAX_VERTICES_GL)):
+        options = scene3d.SceneOptions.for_backend(backend)
+        scene = scene3d.build_scene(system, None, options)
+        total = sum(len(item.verts) for item in scene.items)
+        assert total <= budget, (
+            '20 shells is %d vertices under %s, over its %d budget'
+            % (total, backend, budget))
+
+
+def test_grid_faces_covers_every_quad_twice():
+    """Two triangles per quad, indexing the flattened patch correctly."""
+    import numpy as np
+    from PyXFocus.gui.scene3d import grid_faces
+    rows, cols = 4, 6
+    faces = grid_faces(rows, cols)
+    assert faces.shape == (2 * (rows - 1) * (cols - 1), 3), faces.shape
+    assert faces.max() == rows * cols - 1, (
+        'the far corner vertex is never referenced')
+    # Every vertex of an r x c grid belongs to at least one triangle, and
+    # interior ones to six.
+    counts = np.bincount(faces.ravel(), minlength=rows * cols)
+    assert counts.min() >= 1, 'some vertices are in no triangle'
+    assert counts.reshape(rows, cols)[1:-1, 1:-1].min() == 6, (
+        'an interior vertex is not shared by six triangles')
+
+
+def test_the_scene_names_no_renderer():
+    """
+    The geometry layer must not reach for either backend by name.
+
+    It sits beside optics.py rather than under gui/tabs/ for this reason:
+    importing gui.tabs runs matplotlib.use('Qt5Agg') and pulls in PyQt5.
+    An import scan rather than a subprocess import, because
+    PyXFocus.surfaces already drags matplotlib in transitively -- so "not in
+    sys.modules" is not available to assert, and what is actually promised
+    is narrower: nothing in here is reached for from a renderer.
+    """
+    import ast
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'gui', 'scene3d.py')
+    with open(path) as handle:
+        tree = ast.parse(handle.read())
+
+    imported = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.append(node.module)
+
+    banned = ('matplotlib', 'mpl_toolkits', 'PyQt5', 'pyqtgraph', 'OpenGL')
+    bad = [name for name in imported
+           if name.split('.')[0] in banned]
+    assert not bad, 'scene3d imports a renderer: %r' % (bad,)
 
 
 def test_zeroth_order_is_the_system_without_a_grating():

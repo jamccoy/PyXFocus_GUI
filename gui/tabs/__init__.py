@@ -12,6 +12,7 @@ submodules is the one ordering Python does guarantee.
 """
 
 import collections
+import os
 
 import matplotlib
 matplotlib.use('Qt5Agg')
@@ -22,6 +23,72 @@ from PyXFocus.gui.tabs import energy, layout, layout3d, spot, sweep
 
 
 TabSpec = collections.namedtuple('TabSpec', 'key title widget needs_params')
+
+
+#: Environment variable naming which 3D renderer to build: 'opengl',
+#: 'matplotlib', or 'auto' (the default: OpenGL where it is installed).
+BACKEND_VAR = 'PYXFOCUS_3D_BACKEND'
+
+BACKENDS = ('opengl', 'matplotlib')
+
+
+def opengl_available():
+    """
+    True where the OpenGL 3D tab can actually be built.
+
+    ``except Exception`` and not ``except ImportError``: a PyOpenGL built
+    against a driver this machine does not have raises AttributeError or
+    OSError at import, and losing the whole application to that is a great
+    deal worse than losing one renderer.
+    """
+    try:
+        import pyqtgraph.opengl                          # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+def select_backend(requested, available):
+    """
+    Which 3D renderer to build, as a pure function of the two inputs.
+
+    Separated from :func:`layout3d_tab` so that the decision is testable
+    without a GL context, which is the one thing the test environment
+    cannot provide -- under QT_QPA_PLATFORM=offscreen a GLViewWidget reports
+    "Failed to create context" and renders nothing.
+    """
+    if requested not in ('auto',) + BACKENDS:
+        # A typo in an environment variable must not cost you the tab.
+        requested = 'auto'
+    if requested == 'matplotlib':
+        return 'matplotlib'
+    return 'opengl' if available else 'matplotlib'
+
+
+def layout3d_class():
+    """The 3D tab class this machine can run."""
+    backend = select_backend(os.environ.get(BACKEND_VAR, 'auto'),
+                             opengl_available())
+    if backend == 'opengl':
+        from PyXFocus.gui.tabs import layout3dgl
+        return layout3dgl.GLLayout3DTab
+    return layout3d.Layout3DTab
+
+
+def layout3d_tab():
+    """
+    Build the 3D tab, in whichever renderer is available.
+
+    A factory rather than a class in TABS because the choice has to be made
+    at construction time, not at import time: importing this package must
+    not require pyqtgraph.
+
+    ``_optional.optional_module`` is not the tool for this. That proxy defers
+    an import until an attribute is touched, and what is needed here is a
+    base class -- GLViewWidget -- which cannot be a proxy. A whole tab either
+    exists or it does not.
+    """
+    return layout3d_class()()
 
 # What a tab must be, and what it may be.
 #
@@ -61,7 +128,7 @@ TABS = (
     TabSpec('layout', 'Telescope Layout', layout.LayoutTab, False),
     TabSpec('energy', 'Encircled Energy', energy.EnergyTab, False),
     TabSpec('sweep', 'Parameter Sweep', sweep.SweepTab, True),
-    TabSpec('layout3d', '3D Layout', layout3d.Layout3DTab, False),
+    TabSpec('layout3d', '3D Layout', layout3d_tab, False),
 )
 
 
