@@ -1,4 +1,4 @@
-<!-- pyxfocus-docs v1 sha256:7edcbdd5e95ae4c466d73a14ac2b69b3a76b0455ac249c2446ba5ca8cba4b3e7 -->
+<!-- pyxfocus-docs v1 sha256:b78eca12c22f906150104c1609ffb81c8de0b0bfdb360a4e0eb5f64427ebabcc -->
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -61,6 +61,14 @@ blockquote { color: #555555; margin: 8px 0 8px 16px; }
 <td>One-call Wolter-I trace, plus parameter sweeps</td>
 </tr>
 <tr>
+<td><code>gui/optics.py</code></td>
+<td>Elements, beams and the tracer they compose into</td>
+</tr>
+<tr>
+<td><code>gui/scene3d.py</code></td>
+<td>The 3D picture, described without naming a renderer</td>
+</tr>
+<tr>
 <td><code>gui/app.py</code></td>
 <td>PyQt5 Wolter-I Explorer</td>
 </tr>
@@ -102,6 +110,11 @@ blockquote { color: #555555; margin: 8px 0 8px 16px; }
 <a name="guiwolterpy-the-qt-free-core"></a><h2 id="guiwolterpy-the-qt-free-core"><code>gui/wolter.py</code> — the Qt-free core</h2>
 <p>The GUI is deliberately a thin shell over this module, not the other way around. <code>wolter.py</code> wraps the raw PyXFocus call sequence (sources → primary → secondary → focus) into <code>trace(params)</code> and <code>sweep(...)</code>, taking a <code>WolterParams</code> object and handing back rays plus the numbers you actually want (HPD, throughput, collecting area, ...). Because it has no Qt dependency, the exact same trace the GUI runs on every keystroke is usable from a plain script or notebook.</p>
 <p>It also owns <code>MAX_TRANSLATION_MM</code> / <code>MAX_ROTATION_ARCMIN</code> and <code>check_misalignment()</code> — the guard against a real defect in the Fortran secondary solver. See <strong><a href="Known-Limitations.html">Known Limitations</a></strong> for why that guard exists and what it protects against.</p>
+<a name="guiscene3dpy-the-geometry-layer-with-two-adapters"></a><h2 id="guiscene3dpy-the-geometry-layer-with-two-adapters"><code>gui/scene3d.py</code> — the geometry layer, with two adapters</h2>
+<p>Two things draw the 3D layout: an OpenGL tab (<code>gui/tabs/layout3dgl.py</code>) and a matplotlib one (<code>gui/tabs/layout3d.py</code>). They have almost nothing in common at the API level — one uploads vertex buffers, the other hands 2D arrays to <code>plot_surface</code> — but the <em>decisions</em> are identical in both, and those are what is worth getting right once: which surfaces to mesh and at what resolution, that x and y stay strictly to the same scale while z is squashed, by how much, and which colour a diffraction order is drawn in.</p>
+<p>So <code>scene3d.py</code> turns a <code>System</code> and a <code>TraceResult</code> into a <code>Scene</code>: a flat list of <code>DrawItem</code> records holding nothing but numpy arrays and rgba tuples. Neither backend makes a geometric decision of its own, which is the only way two views of the same telescope stay honest about it. Vertices are in global millimetres throughout; the <code>ViewTransform</code> that squashes them into a fixed view box rides alongside as numbers, applied by the GL backend and ignored by matplotlib — which is how the fallback keeps its millimetre tick labels.</p>
+<p>It lives beside <code>optics.py</code> rather than under <code>gui/tabs/</code> on purpose: importing <code>gui.tabs</code> runs <code>matplotlib.use('Qt5Agg')</code> and pulls in PyQt5, and every decision above is meant to be assertable with no GUI anywhere near it.</p>
+<p>Which backend gets built is decided in <code>gui/tabs/__init__.py</code> by <code>select_backend(requested, available)</code> — a pure function of two arguments, separated from the construction precisely so it can be tested without a GL context. Under <code>QT_QPA_PLATFORM=offscreen</code> a <code>GLViewWidget</code> reports "Failed to create context" and then draws nothing, so the test suite forces the matplotlib backend and asserts the <em>choice</em> rather than the pixels.</p>
 <a name="guiconfigpy-versioned-json-by-design"></a><h2 id="guiconfigpy-versioned-json-by-design"><code>gui/config.py</code> — versioned JSON, by design</h2>
 <p>Configuration files are meant to be opened in an editor, hand-edited, committed next to a paper, and emailed to a collaborator — so the format is deliberately plain and stable: no timestamps, no generator string, ordered keys. <code>diff</code> should answer "did this configuration change", not "was it saved again."</p>
 <p>The module is Qt-free for the same reason <code>wolter.py</code> is: a script or notebook should be able to write a configuration without a GUI. (It isn't dependency-free — importing <code>wolter</code> pulls in the compiled Fortran extensions — only Qt-free.)</p>

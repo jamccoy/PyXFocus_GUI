@@ -1,4 +1,4 @@
-<!-- pyxfocus-docs v1 sha256:a9bb359320b6c044297edc8a78347ab87caee87b026bad293e318166957e5a9f -->
+<!-- pyxfocus-docs v1 sha256:83a34e91b4f8474fb8c017bc7282a1bd0eda2b68545c3de11b6ea572706d92da -->
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -31,8 +31,26 @@ blockquote { color: #555555; margin: 8px 0 8px 16px; }
 <li><strong>Telescope Layout</strong> — the system in profile with rays converging on the focus, plus a zoom inset on the mirrors themselves (a Wolter-I is ~8 m long but only ~20 cm in radius, so the mirrors need their own scale).</li>
 <li><strong>Encircled Energy</strong> — enclosed fraction vs. radius from the centroid.</li>
 <li><strong>Parameter Sweep</strong> — vary one parameter and plot how performance responds.</li>
+<li><strong>3D Layout</strong> — the same system rotatable, which is the view that shows azimuth, decentre and tilt. A profile plot cannot: a secondary tilted by 5 arcmin looks, in profile, exactly like a secondary.</li>
 </ul>
 <p>Alongside: HPD and RMS radius in arcseconds, surviving ray count, throughput, collecting area, and the best-focus position.</p>
+<a name="the-3d-layout"></a><h2 id="the-3d-layout">The 3D layout</h2>
+<p>Drawn by the GPU where <code>pyqtgraph</code> and <code>PyOpenGL</code> are installed and by matplotlib where they are not, from one shared scene description (<code>gui/scene3d.py</code>) so the two renderers cannot disagree about the telescope. <code>PYXFOCUS_3D_BACKEND=opengl</code> or <code>=matplotlib</code> forces one.</p>
+<p>Drag to orbit, scroll to zoom, and use <strong>Iso / Down axis / Side x–z / Side y–z</strong> to return to a known viewpoint. <strong>Down axis</strong> is the one a nested design most wants: it shows the shells as concentric annuli and a grating's dispersion as a displacement across them. Re-tracing after a parameter change leaves the camera where you put it.</p>
+<p>The status line under the view carries what the picture cannot say for itself. Above all the <strong>z compression</strong>: a Wolter-I is roughly 8 m long and 20 cm in radius, so drawn to scale it is an invisible thread. The z axis is squashed and the factor is stated, because an unlabelled 38:1 squash makes a Wolter-I look like a Cassegrain. x and y are never squashed against each other — azimuth, tilt and decentre all live in that plane and are the whole reason for the view.</p>
+<p>The checkboxes:</p>
+<ul>
+<li><strong>Mirrors only</strong> zooms from the whole system to the optics, and trims the rays where they leave that span.</li>
+<li><strong>Solid shells</strong> shades the surfaces. Under OpenGL these are whole shells: the depth test runs per fragment while depth <em>writes</em> are disabled on surfaces, so a shell is transparent to what is inside it and still occludes correctly among the rays. The matplotlib fallback draws half a shell instead, because its 3D axes depth-sort each surface as a single unit — a closed opaque shell would swallow its own rays, differently at every camera angle.</li>
+<li><strong>Grooves</strong> draws the grating grooves and the dispersion arrow.</li>
+<li><strong>Colour by order</strong> colours each ray by the diffraction order it left the grating in.</li>
+</ul>
+<a name="gratings"></a><h2 id="gratings">Gratings</h2>
+<p>Tick <strong>Grating fitted</strong> to put one in the converging beam.</p>
+<p><strong>Linear</strong> gratings have straight, evenly spaced grooves along y, so the dispersion is along x — which means <strong>Side x–z</strong> shows the fan and <strong>Side y–z</strong> looks straight down it. <code>Groove period</code> is in nm.</p>
+<p><strong>Radial</strong> gratings have grooves converging on a hub, which is the arrangement an X-ray spectrometer actually uses behind a Wolter, the beam being converging rather than collimated. A radial grating is specified by <code>Period gradient</code> in <strong>nm per mm</strong> of distance from the hub — the local period is that times the radius. That is a different quantity from the linear <code>Groove period</code> despite both describing groove spacing, which is why they are separate fields rather than one reused one. <code>Hub offset</code> is how far off-axis the grooves converge, and wants to be well outside the beam: near it the local period runs towards zero and the dispersion varies sharply across the aperture. Measured on the default design: 0.4 arcsec at a hub of 8400 mm, 6 arcsec at 500 mm, 233 arcsec at 0.</p>
+<p><code>Order</code> is the <strong>reference</strong> order. HPD, RMS, best focus, throughput and the surviving-ray count are all measured on it and on nothing else. <code>Extra orders ±</code> puts more orders in flight so the dispersion can be seen — they are drawn, never measured, so raising it cannot move a number. The status readout names both counts once a fan is in flight, since "rays surviving" would otherwise quietly change meaning.</p>
+<p>Two honest caveats. The grooves drawn on the grating are a direction cue and not a depiction: a 240 mm grating at a 200 nm period carries over a million of them, and the status line says as much. And every order is drawn at equal weight, because PyXFocus has no groove-efficiency model — a real grating puts very different amounts of light into different orders.</p>
 <a name="parameter-sweep-tolerancing"></a><h2 id="parameter-sweep-tolerancing">Parameter sweep (tolerancing)</h2>
 <p>Pick a parameter, give it a range and a step count, and the sweep re-traces at each point and plots HPD against it, with throughput on a second axis. This is the alignment-budget question — how far can a mirror shift before image quality goes out of spec. A trace takes about 0.01 s, so a 30-point sweep is effectively instantaneous. Results export to CSV.</p>
 <p>Read HPD and throughput <em>together</em>. Past a large enough misalignment, HPD can start improving again purely because vignetting has thrown away every ray except those near the sweet spot — the telescope is getting worse while its headline number gets better. The throughput curve is what exposes that.</p>

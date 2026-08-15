@@ -47,6 +47,18 @@ stops mattering; until then, the explicit clone target is the workaround.)
 * Python 3, numpy, scipy, matplotlib
 * `gfortran` (macOS: `brew install gcc`; Debian/Ubuntu: `apt install gfortran`)
 * PyQt5, only if you want the GUI
+* `pyqtgraph` and `PyOpenGL`, only for the GPU-drawn 3D layout tab. Without
+  them that tab still works, drawn by matplotlib instead, so this is an
+  upgrade rather than a requirement:
+
+  ```bash
+  pip install "pyqtgraph>=0.12.4" PyOpenGL
+  ```
+
+  Tested with pyqtgraph 0.12.4. The 0.13 line requires numpy >= 1.22, which
+  is newer than this project needs. Set `PYXFOCUS_3D_BACKEND` to `opengl` or
+  `matplotlib` to force one renderer; the default picks OpenGL where it can
+  be imported.
 
 ### 2. Build the Fortran extensions
 
@@ -145,21 +157,63 @@ collecting area, and the best-focus position.
 
 ### Reading the 3D view
 
-Two controls, both there for a reason worth knowing:
+The view is drawn by the GPU where `pyqtgraph` and `PyOpenGL` are installed,
+and by matplotlib where they are not. Both draw the same scene — the geometry,
+the framing and the z compression are decided once, in `gui/scene3d.py` — so
+the two cannot disagree about the telescope. Set `PYXFOCUS_3D_BACKEND` to
+`opengl` or `matplotlib` to force one.
 
-* **Mirrors only** zooms from the whole 8 m system to the 20 cm of optics.
-  Away from that zoom the z axis is compressed, and the axis label says by
-  how much — an unlabelled 38:1 squash makes a Wolter-I look like a
-  Cassegrain.
-* **Solid half-shells** shades the mirrors instead of drawing them as
-  wireframes, and deliberately draws only half of each shell so the rays
-  inside stay visible. matplotlib's 3D axes depth-sort each surface as a
-  single unit, so a closed opaque shell would swallow its own rays,
-  differently at every camera angle.
+Drag to orbit, scroll to zoom, and use the **Iso / Down axis / Side** buttons
+to get back to a known viewpoint. Changing a parameter and re-tracing leaves
+the camera where you put it.
+
+The controls, each there for a reason worth knowing:
+
+* **Mirrors only** zooms from the whole 8 m system to the 20 cm of optics,
+  and trims the rays where they leave that span. Away from that zoom the z
+  axis is compressed, and the status line says by how much — an unlabelled
+  38:1 squash makes a Wolter-I look like a Cassegrain.
+* **Solid shells** shades the mirrors instead of drawing them as wireframes.
+  Under OpenGL these are whole shells: the depth test runs per fragment while
+  depth *writes* are disabled on surfaces, so a shell is transparent to the
+  rays inside it and still occludes correctly among them. The matplotlib
+  fallback has to draw half a shell instead, because its 3D axes depth-sort
+  each surface as a single unit and a closed opaque shell would swallow its
+  own rays, differently at every camera angle.
+* **Grooves** draws the grating's grooves and an arrow along the direction
+  its orders disperse in. The grooves are schematic and the status line says
+  so: a 240 mm grating at a 200 nm period has over a million of them.
+* **Colour by order** colours each ray by the diffraction order it left the
+  grating in — warm for positive, cool for negative, grey for the
+  undiffracted beam. The spot tab uses the same colours, so an order can be
+  followed from the grating to where it lands.
 
 x and y are always to the same scale. Only z is ever compressed, because
 azimuth, tilt and decentre all live in the x–y plane and that is the whole
 reason for the view.
+
+### Gratings
+
+Tick **Grating fitted** to put one in the converging beam. Two types:
+
+* **Linear** — straight, evenly spaced grooves along y, so the dispersion is
+  along x. `Groove period` is in nm.
+* **Radial** — grooves converging on a hub, which is what an X-ray
+  spectrometer actually uses behind a Wolter, the beam being converging
+  rather than collimated. Specified by `Period gradient` in **nm per mm** of
+  distance from the hub, so the local period is that times the radius — a
+  different quantity from the linear period despite both describing groove
+  spacing, which is why they are separate fields. `Hub offset` is how far
+  off-axis the grooves converge; keep it well outside the beam, because a hub
+  near the beam is a region where the local period runs towards zero and the
+  image smears (0.4 arcsec at a hub of 8400 mm, 6 at 500 mm, 233 at 0).
+
+`Order` is the **reference** order: HPD, RMS, best focus, throughput and the
+surviving-ray count are all measured on it alone. `Extra orders ±` puts more
+orders in flight so the dispersion can be seen; they are drawn and never
+measured, so raising it cannot move a number. All orders are drawn at equal
+weight — PyXFocus has no groove-efficiency model, which a real grating very
+much does.
 
 ### Nested shells
 

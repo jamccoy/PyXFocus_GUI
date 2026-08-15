@@ -1,4 +1,4 @@
-<!-- pyxfocus-docs v1 sha256:91cb1ee76ad0a29b220b4e0f95fa09d7b56192986479f769522563ec2aaa142b -->
+<!-- pyxfocus-docs v1 sha256:209924e7bf4b70593218ce3af8368624ca204343bd267b200ece2f19b7980a37 -->
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -33,7 +33,16 @@ cd PyXFocus</pre>
 <li>Python 3, numpy, scipy, matplotlib</li>
 <li><code>gfortran</code> (macOS: <code>brew install gcc</code>; Debian/Ubuntu: <code>apt install gfortran</code>)</li>
 <li>PyQt5, only if you want the GUI</li>
+<li><code>pyqtgraph</code> and <code>PyOpenGL</code>, only for the GPU-drawn 3D layout tab. Without
+  them that tab still works, drawn by matplotlib instead, so this is an
+  upgrade rather than a requirement:</li>
 </ul>
+<p><code>bash
+  pip install "pyqtgraph&gt;=0.12.4" PyOpenGL</code></p>
+<p>Tested with pyqtgraph 0.12.4. The 0.13 line requires numpy &gt;= 1.22, which
+  is newer than this project needs. Set <code>PYXFOCUS_3D_BACKEND</code> to <code>opengl</code> or
+  <code>matplotlib</code> to force one renderer; the default picks OpenGL where it can
+  be imported.</p>
 <a name="2-build-the-fortran-extensions"></a><h2 id="2-build-the-fortran-extensions">2. Build the Fortran extensions</h2>
 <p>The repository ships pre-built <strong>Windows</strong> <code>.dll</code> files only. On macOS and Linux you must compile the Fortran modules once:</p>
 <pre>python build_extensions.py</pre>

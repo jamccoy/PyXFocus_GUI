@@ -1,4 +1,4 @@
-<!-- pyxfocus-docs v1 sha256:8fde27a6795f3b7063edaf11f39043d66b67870adb0805124adbe3f289facd60 -->
+<!-- pyxfocus-docs v1 sha256:52b95386870f21bc7fcaeac44313312b6cacf9b5b69b41c7f54a2b6e804f0ec1 -->
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -65,7 +65,12 @@ print('HPD [arcsec]:', anal.hpd(rays) / z0 * 180 / np.pi * 3600)</pre>
 <li>The primary/secondary node is at <code>z = z0</code> with radius <code>r0</code>, so <code>z0</code> is the focal length.</li>
 <li>The primary spans <code>z0 -&gt; z0 + primary_length</code>; the secondary spans <code>z0 - secondary_length -&gt; z0</code>.</li>
 <li><code>transform</code> moves the <em>coordinate system</em>, not the rays; <code>itransform</code> undoes it.</li>
+<li>A ray carries <strong>no wavelength, order, energy or intensity</strong>. There is no eleventh array. Anything per-ray beyond the ten has to be kept in a parallel array of your own, and re-indexed at every cut — <code>tran.vignette</code> and any dead-ray drop return a <em>subsequence</em>, not a prefix, so an index array is the only thing that stays aligned. <code>tran.grat</code> takes its order and wavelength as such arrays; <code>tran.radgrat</code> takes them as scalars, so several orders means several calls with <code>ind=</code> masks.</li>
 </ul>
+<a name="tracing-several-diffraction-orders"></a><h2 id="tracing-several-diffraction-orders">Tracing several diffraction orders</h2>
+<p><code>gui.optics.Beam</code> is what keeps that bookkeeping honest inside the GUI's tracer: it holds <code>orders</code> and <code>waves</code> alongside <code>ids</code>, and <code>Beam.cut</code> re-indexes all of them together, so there is exactly one place a cut can be got wrong. A grating fans one incident ray into one per order at the moment it diffracts, which costs the copies only on the short leg after the grating rather than on the whole telescope.</p>
+<p>Ray ids are handed out in <strong>blocks</strong>, one slot per order in flight, and a fan only ever fills slots inside its own block. Ids therefore stay strictly increasing, which everything downstream depends on — <code>merge</code>, <code>stack_paths</code> and <code>choose_paths</code> all recover a ray's row with <code>searchsorted</code>.</p>
+<p>Metrics are measured on one <strong>reference</strong> order and never averaged across the fan. <code>Beam.focus_weights</code> returns a 0/1 weight array for <code>surf.focusI</code>, because an unweighted focus solve puts the image plane between the dispersed spots where none of them is in focus: measured at HPD 0.089 → 237 arcsec with seven orders in flight. <code>Show script</code> in the GUI writes all of this out as plain PyXFocus, including the parallel <code>ray_order</code> array and its re-indexing, which is the readable version of the whole scheme.</p>
 <p>See <strong><a href="Architecture-and-Repository-Layout.html">Architecture and Repository Layout</a></strong> for what each module (<code>sources</code>, <code>surfaces</code>, <code>transformations</code>, <code>analyses</code>, <code>conicsolve</code>, ...) is responsible for.</p>
 </body>
 </html>

@@ -11,6 +11,8 @@
 | `conicsolve.py` | Wolter-I prescription maths (radii, focus, sag) |
 | `lenses.py` | Singlet and doublet lenses |
 | `gui/wolter.py` | One-call Wolter-I trace, plus parameter sweeps |
+| `gui/optics.py` | Elements, beams and the tracer they compose into |
+| `gui/scene3d.py` | The 3D picture, described without naming a renderer |
 | `gui/app.py` | PyQt5 Wolter-I Explorer |
 | `gui/config.py` | Versioned JSON configuration format |
 | `gui/settings.py` | What the app remembers between runs |
@@ -28,6 +30,16 @@
 The GUI is deliberately a thin shell over this module, not the other way around. `wolter.py` wraps the raw PyXFocus call sequence (sources → primary → secondary → focus) into `trace(params)` and `sweep(...)`, taking a `WolterParams` object and handing back rays plus the numbers you actually want (HPD, throughput, collecting area, ...). Because it has no Qt dependency, the exact same trace the GUI runs on every keystroke is usable from a plain script or notebook.
 
 It also owns `MAX_TRANSLATION_MM` / `MAX_ROTATION_ARCMIN` and `check_misalignment()` — the guard against a real defect in the Fortran secondary solver. See **[Known Limitations](Known-Limitations.md)** for why that guard exists and what it protects against.
+
+## `gui/scene3d.py` — the geometry layer, with two adapters
+
+Two things draw the 3D layout: an OpenGL tab (`gui/tabs/layout3dgl.py`) and a matplotlib one (`gui/tabs/layout3d.py`). They have almost nothing in common at the API level — one uploads vertex buffers, the other hands 2D arrays to `plot_surface` — but the *decisions* are identical in both, and those are what is worth getting right once: which surfaces to mesh and at what resolution, that x and y stay strictly to the same scale while z is squashed, by how much, and which colour a diffraction order is drawn in.
+
+So `scene3d.py` turns a `System` and a `TraceResult` into a `Scene`: a flat list of `DrawItem` records holding nothing but numpy arrays and rgba tuples. Neither backend makes a geometric decision of its own, which is the only way two views of the same telescope stay honest about it. Vertices are in global millimetres throughout; the `ViewTransform` that squashes them into a fixed view box rides alongside as numbers, applied by the GL backend and ignored by matplotlib — which is how the fallback keeps its millimetre tick labels.
+
+It lives beside `optics.py` rather than under `gui/tabs/` on purpose: importing `gui.tabs` runs `matplotlib.use('Qt5Agg')` and pulls in PyQt5, and every decision above is meant to be assertable with no GUI anywhere near it.
+
+Which backend gets built is decided in `gui/tabs/__init__.py` by `select_backend(requested, available)` — a pure function of two arguments, separated from the construction precisely so it can be tested without a GL context. Under `QT_QPA_PLATFORM=offscreen` a `GLViewWidget` reports "Failed to create context" and then draws nothing, so the test suite forces the matplotlib backend and asserts the *choice* rather than the pixels.
 
 ## `gui/config.py` — versioned JSON, by design
 

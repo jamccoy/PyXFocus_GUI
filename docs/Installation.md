@@ -16,6 +16,18 @@ cd PyXFocus
 * Python 3, numpy, scipy, matplotlib
 * `gfortran` (macOS: `brew install gcc`; Debian/Ubuntu: `apt install gfortran`)
 * PyQt5, only if you want the GUI
+* `pyqtgraph` and `PyOpenGL`, only for the GPU-drawn 3D layout tab. Without
+  them that tab still works, drawn by matplotlib instead, so this is an
+  upgrade rather than a requirement:
+
+  ```bash
+  pip install "pyqtgraph>=0.12.4" PyOpenGL
+  ```
+
+  Tested with pyqtgraph 0.12.4. The 0.13 line requires numpy >= 1.22, which
+  is newer than this project needs. Set `PYXFOCUS_3D_BACKEND` to `opengl` or
+  `matplotlib` to force one renderer; the default picks OpenGL where it can
+  be imported.
 
 ## 2. Build the Fortran extensions
 

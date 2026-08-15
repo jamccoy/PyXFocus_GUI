@@ -7,10 +7,10 @@ This is a fork of [kbuffo/PyXFocus](https://github.com/kbuffo/PyXFocus). The ray
 ## Wiki contents
 
 * **[Installation](Installation.md)** — cloning gotchas, requirements, building the Fortran extensions, smoke tests
-* **[Wolter-I Explorer GUI](Wolter-I-Explorer-GUI.md)** — using the graphical front end: tracing, the four views, parameter sweeps, what it remembers
+* **[Wolter-I Explorer GUI](Wolter-I-Explorer-GUI.md)** — using the graphical front end: tracing, the five views, the 3D layout, gratings and diffraction orders, parameter sweeps, what it remembers
 * **[Scripting and Ray Conventions](Scripting-and-Ray-Conventions.md)** — driving PyXFocus from code, the ray-array format, units and coordinate conventions
 * **[Architecture and Repository Layout](Architecture-and-Repository-Layout.md)** — how the package is organized and why, module by module
-* **[Known Limitations](Known-Limitations.md)** — the misalignment solver's hang, the collecting-area caveat
+* **[Known Limitations](Known-Limitations.md)** — the misalignment solver's hang, the collecting-area caveat, what a grating model does and does not include
 
 For the fastest path to a working install and a one-paragraph overview, [README.md](https://github.com/jamccoy/PyXFocus_GUI/blob/master/README.md) in the repository is still the canonical quick reference; these pages expand on it.
 
