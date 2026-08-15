@@ -928,6 +928,196 @@ def test_a_grating_disperses_by_order_times_wavelength():
                       rtol=1e-3), 'm*lambda is not the dispersion variable'
 
 
+def _fan_params(**kwargs):
+    from PyXFocus.gui.wolter import WolterParams
+    base = dict(num_rays=3000, seed=1, use_grating=1, grating_order=1,
+                wavelength=2., grating_period=200.)
+    base.update(kwargs)
+    return WolterParams(**base)
+
+
+def test_a_span_of_zero_traces_only_the_reference_order():
+    """
+    No span means one order, and range(-0, 1) is [0].
+
+    Left as a range, a design asking for order 1 alone would quietly also
+    fly the undiffracted beam, and the measured dispersion would be the
+    average of the two -- exactly half of what the grating equation says.
+    """
+    from PyXFocus.gui.wolter import build_system, traced_orders
+    assert traced_orders(_fan_params()) == (1,)
+    assert traced_orders(_fan_params(grating_order=-2)) == (-2,)
+    assert build_system(_fan_params()).order_stride == 1
+    assert build_system(_fan_params()).order_values() is None
+
+    # The reference order is always present, however narrow the span.
+    assert traced_orders(_fan_params(grating_order=5,
+                                     grating_order_span=1)) == (-1, 0, 1, 5)
+
+
+def test_one_trace_produces_every_order():
+    """
+    A fan, in one pass, dispersed by the grating equation.
+
+    Spacing rather than absolute position, because spot_by_order centres
+    everything on the reference order's centroid -- which is what makes the
+    dispersion visible instead of stacking every order on zero.
+    """
+    from PyXFocus.gui.wolter import trace
+    params = _fan_params(grating_order_span=2)
+    result = trace(params)
+    assert not result.message, result.message
+
+    assert set(result.order_values) == set([-2, -1, 0, 1, 2]), \
+        result.order_values
+    assert result.reference_order == 1
+
+    spots = result.spot_by_order()
+    step = params.grating_z * params.wavelength / params.grating_period
+    for m, (x, _) in spots.items():
+        assert len(x), 'order %+d produced no rays' % m
+        # Measured from the reference order, which sits at zero by
+        # construction: (m - 1) steps away, and negative because tran.grat
+        # subtracts order*wave/d from l.
+        expected = -step * (m - result.reference_order)
+        assert abs(np.mean(x) - expected) < 0.05 * abs(expected) + 0.01, (
+            'order %+d landed at %.4f mm, expected %.4f'
+            % (m, np.mean(x), expected))
+
+
+def test_extra_orders_do_not_move_the_metrics():
+    """
+    Orders added to be looked at must not change a number.
+
+    This is what Beam.focus_weights is for: an unweighted focus solve puts
+    the image plane between the dispersed spots, where none of them is in
+    focus, and drags the HPD and the RMS with it.  Measured with the
+    weighting removed and seven orders in flight: HPD 0.089 -> 237 arcsec,
+    focus 0.05 -> 184 mm.  So this is not a last-bit test.
+    """
+    from PyXFocus.gui.wolter import trace
+    one = trace(_fan_params())
+    fan = trace(_fan_params(grating_order_span=3))
+
+    for name in ('hpd_arcsec', 'rms_arcsec', 'hpd_mm', 'rms_mm',
+                 'num_surviving'):
+        assert getattr(one, name) == getattr(fan, name), (
+            '%s moved when orders were added: %r -> %r'
+            % (name, getattr(one, name), getattr(fan, name)))
+
+    # focus_z is the one exception, and only in the last bits: np.average
+    # with a 0/1 weight array and np.average with weights=None are not
+    # obliged to sum in the same order. Measured at 6e-14 mm on an 8.4 m
+    # telescope, which is a rounding difference and not a moved focus.
+    assert abs(fan.focus_z - one.focus_z) < 1e-9, (
+        'focus moved: %.17g -> %.17g' % (one.focus_z, fan.focus_z))
+
+    assert fan.num_surviving_all_orders == 7 * one.num_surviving, (
+        'seven orders did not each survive: %d' % fan.num_surviving_all_orders)
+
+
+def test_a_fan_keeps_ray_ids_sorted_and_unique():
+    """
+    Ids stay strictly increasing across a fan.
+
+    merge, stack_paths and choose_paths all reach for searchsorted, so this
+    is a contract rather than tidiness: ids are handed out in blocks of
+    `stride` and a fan may only fill slots inside a block.
+    """
+    from PyXFocus.gui.wolter import trace
+    result = trace(_fan_params(grating_order_span=2))
+    ids = result.ray_ids
+    assert (np.diff(ids) > 0).all(), 'ray ids are not strictly increasing'
+    assert len(np.unique(ids)) == len(ids), 'ray ids collided across a fan'
+    assert len(np.unique(ids // 5)) * 5 == len(ids), (
+        'a launched ray did not produce one ray per order slot')
+
+
+def test_drawn_paths_carry_their_order():
+    """
+    Each drawn path knows which order it is, and families stay together.
+
+    The picture worth drawing is one incident ray splitting into a fan, so
+    the paths are chosen by launched ray and every surviving order of a
+    chosen ray is drawn -- not five unrelated rays in five colours.
+    """
+    from PyXFocus.gui.wolter import trace
+    result = trace(_fan_params(grating_order_span=2))
+    assert result.path_orders is not None
+    assert len(result.path_orders) == result.path_x.shape[1]
+    assert set(result.path_orders) <= set(result.order_values)
+
+    stride = 5
+    families = result.path_ids // stride
+    counts = np.bincount(np.unique(families, return_inverse=True)[1])
+    assert (counts == stride).all(), (
+        'a drawn family is missing orders: %r' % counts)
+
+    # Within a family the paths share a launch point and separate after the
+    # grating: that is the whole picture.
+    for family in np.unique(families):
+        rows = np.where(families == family)[0]
+        assert np.ptp(result.path_x[0, rows]) == 0., (
+            'one family launched from several places')
+        assert np.ptp(result.path_x[-1, rows]) > 0., (
+            'a family never dispersed')
+
+
+def test_a_radial_grating_is_specified_in_nm_per_mm():
+    """
+    ``period`` is deleted, not inherited carrying the wrong quantity.
+
+    A radial grating is specified by nm of period per mm of radius, not by
+    nm.  Leaving an attribute of the right name holding the wrong number is
+    how a caller reads it by accident -- as the script exporter did, until
+    it grew a real dispatch.
+    """
+    from PyXFocus.gui import optics
+    from PyXFocus.gui.wolter import build_system
+
+    grating = build_system(_fan_params(grating_type=1)).common[0]
+    assert isinstance(grating, optics.RadialGrating)
+    assert not hasattr(grating, 'period'), (
+        'RadialGrating still carries a .period for someone to misread')
+    assert grating.dpermm > 0.
+
+    # And it says nm/mm when it complains, rather than the inherited "nm".
+    bad = optics.RadialGrating(optics.IDENTITY, -1., 1, 2., half_width=10.)
+    try:
+        bad.check()
+    except ValueError as err:
+        assert 'nm/mm' in str(err), str(err)
+    else:
+        assert False, 'a negative period gradient was accepted'
+
+
+def test_a_radial_grating_drops_its_evanescent_rays():
+    """
+    radgrat marks evanescence with NaN, where grat zeroes the cosines.
+
+    Beam.drop_dead tests ``>= 0.1``, which is False for NaN, so both are
+    dropped on the same path -- but only by luck of how the comparison
+    falls out.  Asserted here because a system carrying NaN direction
+    cosines into analyticImagePlane turns every metric into NaN, and one
+    ray is enough.
+    """
+    import numpy as np
+    from PyXFocus.gui import optics
+
+    # A hub 1 mm away and a huge wavelength: order*wave/d exceeds 1, which
+    # is evanescence by definition.
+    beam = optics.Beam([np.zeros(3) for _ in range(10)])
+    beam.rays[1] = np.array([0.5, 1.0, 1.5])       # x
+    beam.rays[2] = np.array([1.0, 1.0, 1.0])       # y
+    beam.rays[6] = np.array([-1., -1., -1.])       # n, travelling in -z
+    optics.RadialGrating(optics.IDENTITY, 0.001, 50, 90.,
+                         half_width=10.)._diffract(beam)
+    assert np.isnan(beam.rays[6]).any(), (
+        'premise changed: radgrat no longer produces NaN on evanescence')
+    beam.drop_dead()
+    assert len(beam) == 0, 'an evanescent ray survived into the metrics'
+
+
 def test_rays_missing_the_grating_are_reported():
     """A grating too small to catch the beam says so rather than crashing."""
     from PyXFocus.gui.wolter import WolterParams, trace

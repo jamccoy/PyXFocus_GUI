@@ -52,7 +52,7 @@ from PyXFocus.gui import wolter
 FORMAT = 'pyxfocus-wolter-config'
 
 #: The version this build writes.
-VERSION = 2
+VERSION = 3
 
 #: The oldest version this build can still read.
 OLDEST = 1
@@ -231,6 +231,25 @@ def _migrate_1_to_2(payload, problems):
     return payload
 
 
+def _migrate_2_to_3(payload, problems):
+    """
+    Version 2 predates grating types and multi-order tracing.
+
+    Every version 2 grating was linear and traced one order, so defaulting
+    the four new fields to exactly that reproduces what the file described.
+    No note is appended: unlike nesting, nothing about how the design is
+    read has changed, so there is nothing the user needs to be told.
+    """
+    params = payload.get('parameters')
+    if not isinstance(params, dict):
+        return payload
+    params.setdefault('grating_type', 0)          # linear
+    params.setdefault('grating_order_span', 0)    # the reference order only
+    params.setdefault('grating_dpermm', 15.)
+    params.setdefault('grating_hub', 0.)
+    return payload
+
+
 #: Migration table: version N -> a function returning a payload at N+1.
 #:
 #: One entry per step, so a version 1 file still opens after five format
@@ -240,7 +259,7 @@ def _migrate_1_to_2(payload, problems):
 #: with a comment saying why -- because
 #: test_config_every_past_version_has_a_migration refuses to let the table
 #: develop gaps. The runtime is forgiving; the test suite is not.
-_MIGRATIONS = {1: _migrate_1_to_2}
+_MIGRATIONS = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
 
 
 def _read_version(payload, problems):

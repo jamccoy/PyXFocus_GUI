@@ -69,19 +69,80 @@ class Beam(object):
     class is short: never rebind ``.rays``.
     """
 
-    __slots__ = ('rays', 'ids')
+    __slots__ = ('rays', 'ids', 'orders', 'waves', 'stride', 'reference')
 
-    def __init__(self, rays, ids=None):
+    def __init__(self, rays, ids=None, orders=None, waves=None, stride=1,
+                 reference=None):
         self.rays = rays
         self.ids = np.arange(len(rays[1])) if ids is None else ids
+        #: Diffraction order and wavelength per ray, or None.
+        #:
+        #: None, rather than an array of ones, until a grating actually fans
+        #: this beam.  That is what keeps a system with no grating -- and one
+        #: tracing a single order -- allocating nothing and producing the
+        #: same numbers it always has.
+        self.orders = orders
+        self.waves = waves
+        #: Ids are handed out in blocks of ``stride``, one slot per order in
+        #: flight, so that a fan fills slots inside a block and leaves the
+        #: ordering every ``searchsorted`` downstream depends on intact.
+        self.stride = stride
+        #: The order every metric is measured on.
+        self.reference = reference
 
     def __len__(self):
         return len(self.rays[1])
+
+    @property
+    def fanned(self):
+        """True once a grating has split this beam into several orders."""
+        return self.orders is not None
 
     def cut(self, keep):
         """Drop rays where ``keep`` is False, ids included."""
         self.rays = tran.vignette(self.rays, ind=keep)
         self.ids = self.ids[keep]
+        if self.orders is not None:
+            self.orders = self.orders[keep]
+            self.waves = self.waves[keep]
+
+    def fan(self, orders, wavelength, substride):
+        """
+        One ray in, ``len(orders)`` out: same point, one copy per order.
+
+        Ids stay strictly increasing because a source hands them out in
+        blocks of :attr:`stride` and this only ever fills slots inside a
+        block.  :func:`merge`, :func:`stack_paths` and :func:`choose_paths`
+        all reach for ``searchsorted``, so that is a contract and not an
+        implementation detail.
+        """
+        count, width = len(self), len(orders)
+        self.rays = [np.repeat(component, width) for component in self.rays]
+        self.ids = (np.repeat(self.ids, width)
+                    + np.tile(np.arange(width) * substride, count))
+        self.orders = np.tile(np.asarray(orders, dtype=float), count)
+        self.waves = np.full(len(self.ids), float(wavelength))
+
+    def reference_mask(self):
+        """Which rays are in the order the metrics are measured on."""
+        if not self.fanned or self.reference is None:
+            return None
+        return self.orders == self.reference
+
+    def focus_weights(self):
+        """
+        0/1 weights so best focus is found from the reference order alone.
+
+        None when the beam was never fanned, and deliberately not an array
+        of ones: ``np.average(a, weights=None)`` and ``np.average(a,
+        weights=ones)`` are not obliged to agree in the last bit, and the
+        parity table asserts equality rather than closeness.
+
+        Without this, adding an order purely to look at it would drag best
+        focus towards the dispersed spots and quietly move every metric.
+        """
+        mask = self.reference_mask()
+        return None if mask is None else mask.astype(float)
 
     def drop_dead(self):
         """
@@ -133,8 +194,17 @@ def merge(beams):
     """
     if len(beams) == 1:
         return beams[0]
+    # Fanning happens in a system's ``common`` elements, downstream of this,
+    # so no channel should arrive already carrying orders. Asserted rather
+    # than handled: concatenating a fanned channel with an unfanned one would
+    # need a rule for what order the unfanned rays are in, and there is no
+    # honest answer to invent here.
+    assert not any(b.fanned for b in beams), (
+        'a channel was fanned into orders before the merge')
     rays = [np.concatenate([b.rays[i] for b in beams]) for i in range(10)]
-    return Beam(rays, np.concatenate([b.ids for b in beams]))
+    merged = Beam(rays, np.concatenate([b.ids for b in beams]))
+    merged.stride = beams[0].stride
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +366,13 @@ Patch = collections.namedtuple('Patch', 'name kind x y z style')
 Polyline = collections.namedtuple('Polyline', 'name kind x y z style')
 
 
+#: Groove hint lines drawn across a grating.  Odd, so that one of them runs
+#: through the centre.  This is a direction cue and nothing more: a 240 mm
+#: grating at a 200 nm period carries over a million grooves, and a viewer is
+#: expected to say so rather than let the picture imply a coarse one.
+GROOVE_LINES = 9
+
+
 #: How each kind of element is drawn.  Plain strings and floats, because this
 #: module must not import matplotlib; the tab turns them into artist kwargs.
 STYLES = {
@@ -324,6 +401,11 @@ class Source(object):
     count = 0
     #: First launch id. Channels are handed disjoint, increasing blocks.
     id_offset = 0
+    #: Ids per launched ray: one slot for every order the system will put in
+    #: flight, so that a grating downstream can fan a ray into slots inside
+    #: its own block without colliding with the next ray's.  One when nothing
+    #: fans, which reproduces the plain ``arange`` this used to be.
+    id_stride = 1
 
     def emit(self):
         """Return a fresh ten-array ray list, positioned and pointed."""
@@ -332,8 +414,8 @@ class Source(object):
     def launch(self):
         """A :class:`Beam` of ``count`` rays with this channel's ids."""
         rays = self.emit()
-        ids = np.arange(len(rays[1])) + self.id_offset
-        return Beam(rays, ids)
+        ids = (np.arange(len(rays[1])) + self.id_offset) * self.id_stride
+        return Beam(rays, ids, stride=self.id_stride)
 
     def sample(self, beam):
         """The launch stage, in global mm."""
@@ -612,7 +694,8 @@ class LinearGrating(Flat):
     title = 'Grating'
     kind = 'grating'
 
-    def __init__(self, placement, period, order, wavelength, half_width=None):
+    def __init__(self, placement, period, order, wavelength, half_width=None,
+                 orders=None, substride=1):
         self.placement = placement
         #: Groove period in nm, order, and wavelength in nm.
         self.period = float(period)
@@ -621,6 +704,14 @@ class LinearGrating(Flat):
         self.half_width = half_width
         self.aperture = None if not half_width else Rect(half_width,
                                                          half_width)
+        #: Every order to put in flight, or None to trace only :attr:`order`.
+        #: :attr:`order` stays the *reference* order either way -- the one the
+        #: metrics are measured on -- so that adding an order to look at it
+        #: cannot move a number.
+        self.orders = None if orders is None else tuple(orders)
+        #: Id spacing between this grating's order slots.  1 for the only
+        #: grating in a system; see :meth:`System.assign_order_slots`.
+        self.substride = int(substride)
 
     def check(self):
         if self.period <= 0.:
@@ -631,7 +722,13 @@ class LinearGrating(Flat):
                              % self.wavelength)
 
     def interact(self, beam):
+        # The fan goes between arriving and diffracting: every copy leaves
+        # from the same point on the grating and only the outgoing direction
+        # differs, which is what a diffraction order is.
         self.trace_to(beam.rays)
+        if self.orders is not None and len(self.orders) > 1:
+            beam.fan(self.orders, self.wavelength, self.substride)
+            beam.reference = self.order
         self._diffract(beam)
         return beam.drop_dead()
 
@@ -640,23 +737,61 @@ class LinearGrating(Flat):
         # intent(inout), so these are built fresh every call rather than
         # cached. (radgrat, inconsistently, takes both as scalars; hence a
         # separate override rather than one shared call.)
+        if beam.fanned:
+            tran.grat(beam.rays, self.period, beam.orders.copy(),
+                      beam.waves.copy())
+            return
         count = len(beam)
         tran.grat(beam.rays, self.period,
                   np.repeat(float(self.order), count),
                   np.repeat(self.wavelength, count))
 
     def polylines(self):
-        """A few grooves, so the dispersion direction is visible."""
+        """Grooves and the direction the orders disperse in."""
         half = self.half_width
         if not half:
             return []
-        out = []
-        for x in np.linspace(-half, half, 5):
-            gx, gy, gz = to_global(np.repeat(x, 2),
-                                   np.array([-half, half]),
-                                   np.zeros(2), self.placement)
-            out.append(Polyline(self.title, self.kind, gx, gy, gz,
-                                self.style))
+        out = [self._line(np.repeat(x, 2), np.array([-half, half]))
+               for x in np.linspace(-half, half, GROOVE_LINES)]
+        out.extend(self._dispersion_arrow())
+        return out
+
+    def _line(self, x, y, name=None):
+        """A local-frame curve at z = 0, as a global :class:`Polyline`."""
+        gx, gy, gz = to_global(np.asarray(x, dtype=float),
+                               np.asarray(y, dtype=float),
+                               np.zeros(len(x)), self.placement)
+        return Polyline(name or self.title, self.kind, gx, gy, gz, self.style)
+
+    def _dispersion_arrow(self):
+        """
+        An arrow pointing where the reference order actually goes.
+
+        ``tran.grat`` does ``l -= order * wave / d``, so a *positive* order
+        is deflected towards -x.  Pointing it the intuitive way round would
+        be a picture that contradicts the trace drawn beside it.
+
+        Three separate polylines -- shaft and two barbs -- rather than one
+        with NaN breaks in it.  A NaN vertex is a line matplotlib politely
+        skips and a hole a GL vertex buffer renders as a wild triangle.
+        """
+        half = self.half_width
+        if not half or not self.order:
+            return []
+        sign = -1. if self.order > 0 else 1.
+        length, tip = 0.7 * half, 0.12 * half
+        # Along local x for both kinds of grating.  A linear grating's grooves
+        # run along y; a radial grating's run towards a hub that sits on the y
+        # axis, so at the centre they run along y too.  Dispersion is
+        # perpendicular to the grooves, and that is x either way.
+        start = np.array([0., 0.])
+        end = start + np.array([sign * length, 0.])
+        name = 'Dispersion m=%+d' % self.order
+        barbs = [np.stack([end, end - np.array([sign * tip, side * tip])])
+                 for side in (1., -1.)]
+        out = [self._line(np.array([start[0], end[0]]),
+                          np.array([start[1], end[1]]), name=name)]
+        out.extend(self._line(b[:, 0], b[:, 1], name=name) for b in barbs)
         return out
 
 
@@ -668,12 +803,104 @@ class RadialGrating(LinearGrating):
     that every groove points at the same hub.  This is the arrangement an
     X-ray spectrometer actually uses behind a Wolter telescope, where the
     beam is converging rather than collimated.
+
+    ``tran.radgrat`` puts the hub at the *local origin*, which is where the
+    optical axis pierces this plane, so with ``hub_offset`` of zero nothing
+    needs moving: the grooves radiate from the axis, the local period is
+    ``dpermm * r``, and the dispersion is azimuthal.  A non-zero offset is
+    applied inside :meth:`_diffract` rather than through the placement,
+    because the placement would drag the ``Rect`` aperture and the drawn
+    rectangle off the beam along with the hub.
+
+    Note ``period`` is *deleted* rather than inherited.  The number this
+    grating is specified by is nm per mm of radius, not nm, and leaving an
+    attribute of the right name carrying the wrong quantity is how a caller
+    ends up quietly reading it.
     """
 
     title = 'Radial grating'
 
+    def __init__(self, placement, dpermm, order, wavelength, half_width=None,
+                 hub_offset=0., **kwargs):
+        super(RadialGrating, self).__init__(
+            placement, float('nan'), order, wavelength,
+            half_width=half_width, **kwargs)
+        del self.period
+        #: Groove period per mm of distance from the hub, in nm/mm.
+        self.dpermm = float(dpermm)
+        #: How far the hub sits off the optical axis, in mm, towards -y.
+        self.hub_offset = float(hub_offset)
+
+    def check(self):
+        if self.dpermm <= 0.:
+            raise ValueError('the radial groove period gradient must be '
+                             'positive, not %g nm/mm' % self.dpermm)
+        if self.wavelength < 0.:
+            raise ValueError('the wavelength must not be negative, not %g nm'
+                             % self.wavelength)
+
     def _diffract(self, beam):
-        tran.radgrat(beam.rays, self.period, self.order, self.wavelength)
+        shift = (0., -self.hub_offset, 0., 0., 0., 0.)
+        if self.hub_offset:
+            tran.transform(beam.rays, *shift)
+        try:
+            if not beam.fanned:
+                tran.radgrat(beam.rays, self.dpermm, float(self.order),
+                             float(self.wavelength))
+            else:
+                # radgrat takes order and wavelength as SCALARS, so a fanned
+                # beam is diffracted one order at a time through ind=.
+                #
+                # NOT radgratW, which does take a wavelength array: it
+                # derives the outgoing sign of n from the sign of *y*
+                # (transformationsf.f95:255) where radgrat correctly uses the
+                # sign of n (line 216).  Our rays travel in -z at +y, so
+                # radgratW would send half a converging beam back up the
+                # telescope.
+                for m in np.unique(beam.orders):
+                    tran.radgrat(beam.rays, self.dpermm, float(m),
+                                 float(self.wavelength),
+                                 ind=(beam.orders == m))
+        finally:
+            if self.hub_offset:
+                tran.itransform(beam.rays, *shift)
+
+    def polylines(self):
+        """
+        Grooves radiating from the hub, a hub marker, and the dispersion.
+
+        The hub is usually outside the drawn rectangle -- on the axis, with
+        the grating off to one side of it -- so the marker is what makes the
+        converging grooves mean anything.
+        """
+        half = self.half_width
+        if not half:
+            return []
+        hub = np.array([0., -self.hub_offset])
+        out = []
+        for x in np.linspace(-half, half, GROOVE_LINES):
+            # Along the local radius from the hub, extended past both edges
+            # so a groove reads as a ray from the hub and not a chord.
+            direction = np.array([x, half]) - hub
+            length = np.hypot(*direction) or 1.
+            direction = direction / length
+            ends = np.stack([hub - direction * half,
+                             hub + direction * 2. * half])
+            out.append(self._line(ends[:, 0], ends[:, 1]))
+        out.extend(self._hub_marker(hub, half * 0.08))
+        out.extend(self._dispersion_arrow())
+        return out
+
+    def _hub_marker(self, hub, radius):
+        phi = np.linspace(0., 2 * np.pi, 33)
+        out = [self._line(hub[0] + radius * np.cos(phi),
+                          hub[1] + radius * np.sin(phi), name='Hub')]
+        out.append(self._line(hub[0] + np.array([-radius, radius]),
+                              np.repeat(hub[1], 2), name='Hub'))
+        out.append(self._line(np.repeat(hub[0], 2),
+                              hub[1] + np.array([-radius, radius]),
+                              name='Hub'))
+        return out
 
 
 class AutoFocus(Element):
@@ -701,7 +928,11 @@ class AutoFocus(Element):
         self.placement = IDENTITY
 
     def apply(self, beam, record=True):
-        dz = surf.focusI(beam.rays)
+        # Weighted to the reference order when several are in flight. An
+        # unweighted solve would put the plane between the dispersed spots,
+        # which is not where any of them is in focus -- so a drawn order
+        # would silently move the HPD, the RMS and the focal length.
+        dz = surf.focusI(beam.rays, weights=beam.focus_weights())
         self.focus_z = dz
         self.placement = Placement(0., 0., dz, 0., 0., 0.)
         return (self.sample(beam) if record else None), None, 0
@@ -759,6 +990,51 @@ class System(object):
         out.extend(self.common)
         out.append(self.terminator)
         return out
+
+    # -- diffraction orders ------------------------------------------------
+
+    @property
+    def fanning_elements(self):
+        """Elements that split one incoming ray into several outgoing ones."""
+        return [e for e in self.elements
+                if getattr(e, 'orders', None) is not None
+                and len(e.orders) > 1]
+
+    @property
+    def order_stride(self):
+        """How many id slots one launched ray needs."""
+        stride = 1
+        for element in self.fanning_elements:
+            stride *= len(element.orders)
+        return stride
+
+    def assign_order_slots(self):
+        """
+        Give each fanning element its own digit of the id block.
+
+        Mixed radix, so two gratings compose rather than collide: the first
+        moves the ray between wide slots and the second subdivides them.
+        With one grating -- which is every design the GUI builds today --
+        this is simply a substride of 1.
+        """
+        substride = self.order_stride
+        for element in self.fanning_elements:
+            substride //= len(element.orders)
+            element.substride = substride
+        return self.order_stride
+
+    def order_values(self):
+        """Every order in flight, in id-slot order."""
+        elements = self.fanning_elements
+        if not elements:
+            return None
+        if len(elements) == 1:
+            return tuple(elements[0].orders)
+        combined = [()]
+        for element in elements:
+            combined = [prefix + (m,) for prefix in combined
+                        for m in element.orders]
+        return tuple(combined)
 
     def check(self):
         """
@@ -836,6 +1112,15 @@ class TraceResult(object):
         #: path can be tied back to the ray it belongs to.
         self.path_ids = None
         self.ray_ids = None
+        #: Diffraction order per surviving ray and per drawn path, or None
+        #: when nothing in the system fanned the beam.
+        self.orders = None
+        self.path_orders = None
+        #: Every order that was put in flight, and the one the metrics below
+        #: are measured on.  They are not the same thing on purpose: extra
+        #: orders exist to be looked at, and must not move a number.
+        self.order_values = None
+        self.reference_order = None
         #: Performance metrics.
         self.hpd_arcsec = np.nan
         self.rms_arcsec = np.nan
@@ -843,7 +1128,11 @@ class TraceResult(object):
         self.rms_mm = np.nan
         self.focus_z = np.nan
         self.num_launched = 0
+        #: Surviving rays *in the reference order*, which is what throughput
+        #: has always meant.  :attr:`num_surviving_all_orders` is the total
+        #: across the fan, and differs only when one is being traced.
         self.num_surviving = 0
+        self.num_surviving_all_orders = 0
         self.geometric_area = 0.
         self.message = ''
         #: Rays the Fortran surface solver gave up on, keyed by element.
@@ -920,12 +1209,54 @@ class TraceResult(object):
         return self.geometric_area * self.throughput
 
     @property
+    def reference_mask(self):
+        """Which surviving rays are in the reference order; None if unfanned."""
+        if self.orders is None or self.reference_order is None:
+            return None
+        return self.orders == self.reference_order
+
+    @property
     def spot(self):
         """Image-plane (x, y) in mm, centred on the centroid."""
         if self.rays is None or self.num_surviving == 0:
             return np.array([]), np.array([])
         x, y = self.rays[1], self.rays[2]
+        mask = self.reference_mask
+        if mask is not None:
+            x, y = x[mask], y[mask]
         return x - np.mean(x), y - np.mean(y)
+
+    def spot_by_order(self):
+        """
+        ``{order: (x, y)}`` in mm, all of them about the reference centroid.
+
+        About the *reference* centroid and not each order's own: centring
+        every order on itself would stack the dispersed spots on top of one
+        another and hide the only thing this is for.  Returns None when the
+        beam was never fanned.
+        """
+        if self.rays is None or self.orders is None:
+            return None
+        x, y = self.rays[1], self.rays[2]
+        mask = self.reference_mask
+        if mask is None or not mask.any():
+            x0, y0 = np.mean(x), np.mean(y)
+        else:
+            x0, y0 = np.mean(x[mask]), np.mean(y[mask])
+        out = collections.OrderedDict()
+        for m in self.order_values or ():
+            here = self.orders == m
+            out[m] = (x[here] - x0, y[here] - y0)
+        return out
+
+    def spot_arcsec_by_order(self):
+        """:meth:`spot_by_order` in arcseconds, as the plots want it."""
+        spots = self.spot_by_order()
+        if spots is None:
+            return None
+        scale = _ARCSEC_PER_RAD / self.focal_length
+        return collections.OrderedDict(
+            (m, (x * scale, y * scale)) for m, (x, y) in spots.items())
 
     @property
     def spot_arcsec(self):
@@ -946,24 +1277,41 @@ class TraceResult(object):
 # Path bookkeeping
 # ---------------------------------------------------------------------------
 
-def choose_paths(launch_stage, final_ids, num):
+def choose_paths(launch_stage, final_ids, num, stride=1):
     """
     Pick which surviving rays to draw, spread evenly around the aperture.
 
     Taking the first N would cluster them wherever the random source happened
     to put its low indices; sorting by launch azimuth gives the even fan a
     layout drawing wants.
+
+    Whole ray *families* when a grating has fanned the beam: an incident ray
+    splitting into a coloured fan of orders is the picture worth drawing, and
+    picking orders independently would draw three unrelated rays in three
+    colours instead.  ``id // stride`` is the launched ray a slot belongs to.
     """
     ids0, x0, y0, _ = launch_stage
-    row = np.searchsorted(ids0, final_ids)
+    if stride == 1:
+        row = np.searchsorted(ids0, final_ids)
+        order = np.argsort(np.arctan2(y0[row], x0[row]))
+        if len(order) > num:
+            order = order[np.linspace(0, len(order) - 1, num).astype(int)]
+        # Sorted, because every lookup below is a searchsorted.
+        return np.sort(final_ids[order])
+
+    families = np.unique(final_ids // stride)
+    row = np.searchsorted(ids0 // stride, families)
     order = np.argsort(np.arctan2(y0[row], x0[row]))
-    if len(order) > num:
-        order = order[np.linspace(0, len(order) - 1, num).astype(int)]
-    # Sorted, because every lookup below is a searchsorted.
-    return np.sort(final_ids[order])
+    # num is a budget of drawn lines, not of rays, so that turning on five
+    # orders does not quintuple what is on screen.
+    want = max(1, num // stride)
+    if len(order) > want:
+        order = order[np.linspace(0, len(order) - 1, want).astype(int)]
+    keep = np.isin(final_ids // stride, families[order])
+    return np.sort(final_ids[keep])
 
 
-def stack_paths(stages, num):
+def stack_paths(stages, num, stride=1):
     """
     Assemble per-stage samples into ``(stages, rays)`` arrays.
 
@@ -988,13 +1336,20 @@ def stack_paths(stages, num):
     if len(final_ids) == 0:
         return None, None, None, None
 
-    chosen = choose_paths(stages[0], final_ids, num)
+    chosen = choose_paths(stages[0], final_ids, num, stride)
     shape = (len(stages), len(chosen))
     xs = np.empty(shape)
     ys = np.empty(shape)
     zs = np.empty(shape)
     for k, (ids, x, y, z) in enumerate(stages):
-        row = np.searchsorted(ids, chosen)
+        # A stage before a grating holds one row per launched ray; a stage
+        # after it holds one per (ray, order).  Ids are handed out in blocks
+        # of ``stride`` and a fan only fills slots inside a block, so the
+        # largest stage id not greater than a chosen id is exactly the row
+        # that ray came from: the pre-fan row upstream, the ray itself
+        # downstream.  With stride 1 and exact ids this is the plain
+        # searchsorted it replaced.
+        row = np.searchsorted(ids, chosen, side='right') - 1
         xs[k], ys[k], zs[k] = x[row], y[row], z[row]
     return chosen, xs, ys, zs
 
@@ -1118,15 +1473,42 @@ def trace_system(system, params, record_paths=True, num_paths=40):
 
     result.rays = beam.rays
     result.ray_ids = beam.ids
-    result.num_surviving = len(beam)
-    result.hpd_mm = anal.hpd(beam.rays)
-    result.rms_mm = anal.rmsCentroid(beam.rays)
-    result.hpd_arcsec = result.hpd_mm / system.focal_length * _ARCSEC_PER_RAD
-    result.rms_arcsec = result.rms_mm / system.focal_length * _ARCSEC_PER_RAD
+    result.orders = beam.orders
+    result.reference_order = beam.reference
+    result.order_values = system.order_values()
+    result.num_surviving_all_orders = len(beam)
+
+    # Every metric below is measured on the reference order alone. Orders
+    # added to be looked at must not move a number -- see
+    # Beam.focus_weights, which keeps best focus honest for the same reason.
+    metric_rays = beam.rays
+    mask = beam.reference_mask()
+    if mask is not None:
+        metric_rays = [component[mask] for component in beam.rays]
+    result.num_surviving = len(metric_rays[1])
+
+    if result.num_surviving:
+        result.hpd_mm = anal.hpd(metric_rays)
+        result.rms_mm = anal.rmsCentroid(metric_rays)
+        result.hpd_arcsec = (result.hpd_mm / system.focal_length
+                             * _ARCSEC_PER_RAD)
+        result.rms_arcsec = (result.rms_mm / system.focal_length
+                             * _ARCSEC_PER_RAD)
+    else:
+        result.warnings.append(
+            'No rays survived in order %s, so there are no metrics to '
+            'report; the other orders are drawn but not measured.'
+            % result.reference_order)
 
     if record_paths:
-        ids, xs, ys, zs = stack_paths(stages, num_paths)
+        ids, xs, ys, zs = stack_paths(stages, num_paths, beam.stride)
         result.path_ids = ids
+        if ids is not None and result.order_values is not None:
+            # Which order a drawn path is in falls straight out of the id
+            # arithmetic: the slot within its block is the index into the
+            # orders that were put in flight.
+            values = np.asarray(result.order_values)
+            result.path_orders = values[ids % beam.stride]
         result.path_x, result.path_y, result.path_z = xs, ys, zs
         # path_r keeps its old name and shape so the 2D layout tab needs no
         # change and inherits the id-alignment fix for free.

@@ -103,12 +103,34 @@ class WolterParams(object):
         arcminutes.
     use_grating : int
         Put a diffraction grating in the converging beam.
+    grating_type : int
+        0 for a linear grating, 1 for a radial one whose grooves converge on
+        a hub.  A radial grating is what an X-ray spectrometer actually uses
+        behind a Wolter, because the beam is converging rather than
+        collimated.
     grating_z : float
         Where it sits, in mm above the focus.
     grating_period : float
-        Groove period in nm.
+        Groove period in nm.  Linear gratings only.
+    grating_dpermm : float
+        Period *gradient* in nm per mm of distance from the hub; the local
+        period is this times the radius.  Radial gratings only, and a
+        different quantity from ``grating_period`` despite both being about
+        groove spacing -- which is why they are separate fields.
+    grating_hub : float
+        How far off the optical axis, in mm, the grooves converge.  Radial
+        gratings only.  0 puts the hub where the axis pierces the grating --
+        which is inside the beam, where the local period runs to zero and the
+        image smears to hundreds of arcseconds.  A real spectrometer puts the
+        hub metres away, so that the grooves are near enough parallel across
+        the beam.
     grating_order : int
         Diffraction order. Zero reproduces the system without a grating.
+        This is the *reference* order: every metric is measured on it.
+    grating_order_span : int
+        Also put orders +/- this many in flight, so the dispersion can be
+        seen.  They are drawn and never measured, so raising this cannot
+        move the HPD, the RMS, the focus or the throughput.
     wavelength : float
         Wavelength in nm.
     grating_size : float
@@ -128,8 +150,11 @@ class WolterParams(object):
                  num_rays=20000, num_shells=1, shell_gap=1.,
                  sec_dx=0., sec_dy=0., sec_dz=0.,
                  sec_rx=0., sec_ry=0., sec_rz=0.,
-                 use_grating=0, grating_z=500., grating_period=200.,
-                 grating_order=1, wavelength=2., grating_size=120.,
+                 use_grating=0, grating_type=0, grating_z=500.,
+                 grating_period=200., grating_dpermm=200. / 8400.,
+                 grating_hub=8400.,
+                 grating_order=1, grating_order_span=0,
+                 wavelength=2., grating_size=120.,
                  use_detector=0, det_z=0., det_tilt=0., seed=0):
         self.r0 = r0
         self.z0 = z0
@@ -148,9 +173,13 @@ class WolterParams(object):
         self.sec_ry = sec_ry
         self.sec_rz = sec_rz
         self.use_grating = use_grating
+        self.grating_type = grating_type
         self.grating_z = grating_z
         self.grating_period = grating_period
+        self.grating_dpermm = grating_dpermm
+        self.grating_hub = grating_hub
         self.grating_order = grating_order
+        self.grating_order_span = grating_order_span
         self.wavelength = wavelength
         self.grating_size = grating_size
         self.use_detector = use_detector
@@ -468,10 +497,7 @@ def build_system(params):
 
     common = []
     if int(getattr(params, 'use_grating', 0)):
-        common.append(optics.LinearGrating(
-            optics.Placement(0., 0., float(params.grating_z), 0., 0., 0.),
-            params.grating_period, int(params.grating_order),
-            params.wavelength, half_width=float(params.grating_size)))
+        common.append(build_grating(params))
 
     # The lever arm that turns millimetres at the image into arcseconds is
     # node to image plane, not node to origin. They differ as soon as the
@@ -489,8 +515,49 @@ def build_system(params):
              else 'Wolter-I, %d shells' % len(channels))
     if common:
         label += ' + grating'
-    return optics.System(channels, terminator, focal_length, sum(areas),
-                         label=label, warnings=notes, common=common)
+    system = optics.System(channels, terminator, focal_length, sum(areas),
+                           label=label, warnings=notes, common=common)
+
+    # Ids are handed out in blocks wide enough for every order in flight, so
+    # that a grating can fan a ray into slots inside its own block. Must come
+    # after the system exists and before anything launches.
+    stride = system.assign_order_slots()
+    for channel in system.channels:
+        channel.source.id_stride = stride
+    return system
+
+
+def traced_orders(params):
+    """
+    Which orders this design puts in flight, low to high.
+
+    The reference order is always among them: it is what every metric is
+    measured on, and a span that excluded it would report NaN for all of
+    them without saying why.
+    """
+    span = int(getattr(params, 'grating_order_span', 0))
+    reference = int(params.grating_order)
+    if span <= 0:
+        # Not range(-0, 1), which is [0] -- that would quietly add the
+        # undiffracted beam to every single-order design and halve the
+        # measured dispersion by averaging the two.
+        return (reference,)
+    return tuple(sorted(set(range(-span, span + 1)) | {reference}))
+
+
+def build_grating(params):
+    """The grating this design asks for, linear or radial."""
+    placement = optics.Placement(0., 0., float(params.grating_z), 0., 0., 0.)
+    orders = traced_orders(params)
+    shared = dict(half_width=float(params.grating_size), orders=orders)
+    if int(getattr(params, 'grating_type', 0)):
+        return optics.RadialGrating(
+            placement, float(getattr(params, "grating_dpermm", 200. / 8400.)),
+            int(params.grating_order), params.wavelength,
+            hub_offset=float(getattr(params, "grating_hub", 8400.)), **shared)
+    return optics.LinearGrating(
+        placement, params.grating_period, int(params.grating_order),
+        params.wavelength, **shared)
 
 
 def trace(params, record_paths=True, num_paths=40):
@@ -589,18 +656,59 @@ good = np.isfinite(rays[1]) & np.isfinite(rays[2]) & np.isfinite(rays[3])
 rays = tran.vignette(rays, ind=good)
 '''
 
+_SCRIPT_FAN = '''
+# {n_orders!r} diffraction orders from one beam: every ray is copied once
+# per order, so `ray_order` stays parallel to `rays` through every vignette
+# below. Order {order!r} is the reference -- the one the metrics are measured
+# on -- and the rest are along to be looked at.
+orders = {orders!r}
+rays = [np.repeat(component, len(orders)) for component in rays]
+ray_order = np.tile(np.array(orders, dtype=float), len(rays[1]) // len(orders))
+'''
+
 _SCRIPT_GRATING = '''
-# Grating, {size!r} mm half-width, at z = {gz!r} mm.
+# Linear grating, {size!r} mm half-width, at z = {gz!r} mm.
 tran.transform(rays, 0, 0, {gz!r}, 0, 0, 0)
-surf.flat(rays)
+surf.flat(rays){fan}
 count = len(rays[1])
-tran.grat(rays, {period!r}, np.repeat(float({order!r}), count),
+tran.grat(rays, {period!r}, {order_arg},
           np.repeat({wave!r}, count))
-rays = drop_dead(rays)
+{keep_dead}rays = drop_dead(rays)
 ind = np.logical_and(np.abs(rays[1]) <= {size!r}, np.abs(rays[2]) <= {size!r})
-rays = tran.vignette(rays, ind=ind)
+{keep_ind}rays = tran.vignette(rays, ind=ind)
 tran.itransform(rays, 0, 0, {gz!r}, 0, 0, 0)
 '''
+
+_SCRIPT_RADIAL = '''
+# Radial grating, {size!r} mm half-width, at z = {gz!r} mm.
+# tran.radgrat puts the hub at the LOCAL ORIGIN, so the local period is
+# {dpermm!r} nm/mm times the distance from it and the dispersion is azimuthal.
+# The hub shift wraps the diffraction ONLY: the grating's own extent is
+# measured about the grating, not about its hub, so an aperture test inside
+# the shifted frame would vignette every ray {hub_mm} mm off centre.
+tran.transform(rays, 0, 0, {gz!r}, 0, 0, 0)
+surf.flat(rays){fan}
+{hub_in}{diffract}{hub_out}{keep_dead}rays = drop_dead(rays)
+ind = np.logical_and(np.abs(rays[1]) <= {size!r}, np.abs(rays[2]) <= {size!r})
+{keep_ind}rays = tran.vignette(rays, ind=ind)
+tran.itransform(rays, 0, 0, {gz!r}, 0, 0, 0)
+'''
+
+#: radgrat takes order and wavelength as scalars, so a fan goes one order at
+#: a time. Never radgratW, whose sign of n comes from the sign of y.
+_SCRIPT_RADIAL_FAN = '''for m in np.unique(ray_order):
+    tran.radgrat(rays, {dpermm!r}, float(m), {wave!r}, ind=(ray_order == m))
+'''
+_SCRIPT_RADIAL_ONE = '''tran.radgrat(rays, {dpermm!r}, float({order!r}), {wave!r})
+'''
+
+#: Keeps ray_order aligned with rays across a cut. `drop_dead` and
+#: `tran.vignette` both return a subsequence, never a prefix, so an index
+#: array is the only thing that stays right.
+_SCRIPT_KEEP_DEAD = '''alive = rays[4]**2 + rays[5]**2 + rays[6]**2 >= 0.1
+ray_order = ray_order[alive]
+'''
+_SCRIPT_KEEP_IND = 'ray_order = ray_order[ind]\n'
 
 _SCRIPT_DETECTOR = '''
 # Detector at z = {dz!r} mm, tilted {tilt!r} deg about x.
@@ -614,10 +722,29 @@ _SCRIPT_AUTOFOCUS = '''
 image_z = surf.focusI(rays)
 '''
 
+#: Weighted to the reference order. Unweighted, the plane lands between the
+#: dispersed spots, where none of them is in focus: measured at HPD 0.089 ->
+#: 237 arcsec with seven orders in flight.
+_SCRIPT_AUTOFOCUS_WEIGHTED = '''
+# Best focus, found from the REFERENCE order alone.
+reference = ray_order == {order!r}
+image_z = surf.focusI(rays, weights=reference.astype(float))
+'''
+
 _SCRIPT_TAIL = '''
 focal_length = {focal!r}
 hpd_arcsec = anal.hpd(rays) / focal_length * 180. / np.pi * 3600.
 print("rays surviving:", len(rays[1]))
+print("HPD [arcsec]:", hpd_arcsec)
+'''
+
+#: The metrics are measured on the reference order, the others only drawn.
+_SCRIPT_TAIL_WEIGHTED = '''
+focal_length = {focal!r}
+measured = tran.vignette(rays, ind=(ray_order == {order!r}))
+hpd_arcsec = anal.hpd(measured) / focal_length * 180. / np.pi * 3600.
+print("rays surviving:", len(measured[1]))
+print("rays surviving, all orders:", len(rays[1]))
 print("HPD [arcsec]:", hpd_arcsec)
 '''
 
@@ -654,19 +781,87 @@ def script_for(params):
         dz=params.sec_dz, rx=params.sec_rx, ry=params.sec_ry,
         rz=params.sec_rz, shells=shells, seed_line=seed_line)
 
+    fanned = False
     for element in system.common:
-        text += _SCRIPT_GRATING.format(
-            gz=element.placement.dz, period=element.period,
-            order=element.order, wave=element.wavelength,
-            size=element.half_width)
+        fragment = _script_for_element(element)
+        if fragment is None:
+            text += ('\n# NOTE: %s is in this system but the script exporter '
+                     'does not know how to write it out yet.\n'
+                     % type(element).__name__)
+            continue
+        text += fragment
+        fanned = fanned or _fans(element)
 
     if int(getattr(params, 'use_detector', 0)):
         text += _SCRIPT_DETECTOR.format(dz=float(params.det_z),
                                         tilt=float(params.det_tilt))
+    elif fanned:
+        text += _SCRIPT_AUTOFOCUS_WEIGHTED.format(
+            order=float(params.grating_order))
     else:
         text += _SCRIPT_AUTOFOCUS
 
-    return text + _SCRIPT_TAIL.format(focal=system.focal_length)
+    tail = _SCRIPT_TAIL_WEIGHTED if fanned else _SCRIPT_TAIL
+    return text + tail.format(focal=system.focal_length,
+                              order=float(params.grating_order))
+
+
+def _fans(element):
+    """True when this element copies each ray into several orders."""
+    orders = getattr(element, 'orders', None)
+    return orders is not None and len(orders) > 1
+
+
+def _script_for_element(element):
+    """
+    The script fragment for one common element, or None if there is none.
+
+    An explicit dispatch, because the loop this replaced formatted *every*
+    element in ``system.common`` with the linear-grating template and read
+    ``.period``, ``.order`` and ``.wavelength`` off it.  That worked only
+    because a grating was the sole thing ever placed there; a radial grating
+    has no ``.period`` at all and would have raised AttributeError.
+
+    RadialGrating is tested first on purpose: it is a subclass of
+    LinearGrating, so the other order would match it and emit the wrong
+    physics rather than fail.
+    """
+    fan = ''
+    keep_dead, keep_ind = '', ''
+    if _fans(element):
+        fan = '\n' + _SCRIPT_FAN.format(orders=list(element.orders),
+                                        n_orders=len(element.orders),
+                                        order=element.order).strip('\n')
+        keep_dead, keep_ind = _SCRIPT_KEEP_DEAD, _SCRIPT_KEEP_IND
+
+    if isinstance(element, optics.RadialGrating):
+        if _fans(element):
+            diffract = _SCRIPT_RADIAL_FAN.format(dpermm=element.dpermm,
+                                                 wave=element.wavelength)
+        else:
+            diffract = _SCRIPT_RADIAL_ONE.format(dpermm=element.dpermm,
+                                                 order=element.order,
+                                                 wave=element.wavelength)
+        hub = element.hub_offset
+        return _SCRIPT_RADIAL.format(
+            gz=element.placement.dz, dpermm=element.dpermm,
+            size=element.half_width, fan=fan, diffract=diffract,
+            keep_dead=keep_dead, keep_ind=keep_ind, hub_mm=hub,
+            hub_in=('tran.transform(rays, 0, %r, 0, 0, 0, 0)\n' % -hub
+                    if hub else ''),
+            hub_out=('tran.itransform(rays, 0, %r, 0, 0, 0, 0)\n' % -hub
+                     if hub else ''))
+
+    if isinstance(element, optics.LinearGrating):
+        order_arg = ('ray_order.copy()' if _fans(element)
+                     else 'np.repeat(float(%r), count)' % element.order)
+        return _SCRIPT_GRATING.format(
+            gz=element.placement.dz, period=element.period,
+            order=element.order, wave=element.wavelength,
+            size=element.half_width, fan=fan, order_arg=order_arg,
+            keep_dead=keep_dead, keep_ind=keep_ind)
+
+    return None
 
 
 def mirror_profile(params, num=200):
@@ -725,7 +920,12 @@ def mirror_z_range(params):
 #: is edited.  ``lo``/``hi`` are None for parameters a configuration carries
 #: but the panel gives no field of its own (currently just ``seed``).
 ParamSpec = collections.namedtuple(
-    'ParamSpec', 'name label unit default lo hi decimals step')
+    'ParamSpec', 'name label unit default lo hi decimals step choices')
+#: ``choices`` names the options of a field that is a choice rather than a
+#: quantity, and is None for every ordinary one.  The panel draws a combo box
+#: for it and stores the selected *index*, which is why such a field is also
+#: an integer -- see INT_FIELDS.
+ParamSpec.__new__.__defaults__ = (None,)
 
 #: Every parameter the explorer exposes, in panel order.
 #:
@@ -763,9 +963,25 @@ PARAM_SPECS = (
     ParamSpec('sec_rz', 'Tilt about z', 'arcmin', 0.,
               -MAX_ROTATION_ARCMIN, MAX_ROTATION_ARCMIN, 4, 0.05),
 
+    ParamSpec('grating_type', 'Grating type', '', 0, 0, 1, 0, 1,
+              ('Linear', 'Radial')),
     ParamSpec('grating_z', 'Grating position z', 'mm', 500., 1., 100000., 1, 25.),
-    ParamSpec('grating_period', 'Groove period', 'nm', 200., 1., 100000., 2, 10.),
+    ParamSpec('grating_period', 'Groove period (linear)', 'nm', 200., 1.,
+              100000., 2, 10.),
+    # Defaults chosen together: a hub 8400 mm off-axis with a gradient of
+    # 200/8400 nm/mm gives a 200 nm period at the hub, so switching a design
+    # from Linear to Radial compares like with like.  The hub is deliberately
+    # far outside the beam -- at z = 500 mm the beam is a 13 mm annulus
+    # centred on the axis, so a hub near it would put the grating almost on
+    # top of its own convergence point, where the local period runs to zero
+    # and the image smears to hundreds of arcseconds.  Measured: 0.4 arcsec
+    # at a hub of 8400 mm, 6 at 500 mm, 233 at 0.
+    ParamSpec('grating_dpermm', 'Period gradient (radial)', 'nm/mm',
+              200. / 8400., 1e-5, 10000., 5, 0.005),
+    ParamSpec('grating_hub', 'Hub offset (radial)', 'mm', 8400., 0., 100000.,
+              1, 100.),
     ParamSpec('grating_order', 'Order', '', 1, -20, 20, 0, 1),
+    ParamSpec('grating_order_span', 'Extra orders +/-', '', 0, 0, 6, 0, 1),
     ParamSpec('wavelength', 'Wavelength', 'nm', 2., 0., 100., 4, 0.5),
     ParamSpec('grating_size', 'Grating half-width', 'mm', 120., 1., 5000., 1, 10.),
 
@@ -793,8 +1009,12 @@ PARAM_GROUPS = (
     ('Source', ('offaxis', 'azimuth', 'num_rays'), None),
     ('Secondary misalignment', ('sec_dx', 'sec_dy', 'sec_dz',
                                 'sec_rx', 'sec_ry', 'sec_rz'), None),
-    ('Grating', ('grating_z', 'grating_period', 'grating_order',
-                 'wavelength', 'grating_size'), 'use_grating'),
+    # A type choice is a field *inside* an optional group, not a second kind
+    # of gate: the group's checkbox still answers "is there a grating".
+    ('Grating', ('grating_type', 'grating_z', 'grating_period',
+                 'grating_dpermm', 'grating_hub', 'grating_order',
+                 'grating_order_span', 'wavelength', 'grating_size'),
+     'use_grating'),
     ('Detector', ('det_z', 'det_tilt'), 'use_detector'),
 )
 
@@ -805,6 +1025,7 @@ PARAM_FIELDS = tuple(spec.name for spec in PARAM_SPECS)
 #: parameter panel needs the same list to round its spin boxes, and a
 #: second copy over there is exactly how num_shells arrived as 3.0000001.
 INT_FIELDS = frozenset(('num_rays', 'num_shells', 'grating_order',
+                        'grating_order_span', 'grating_type',
                         'use_grating', 'use_detector', 'seed'))
 
 _SPEC_BY_NAME = dict((spec.name, spec) for spec in PARAM_SPECS)

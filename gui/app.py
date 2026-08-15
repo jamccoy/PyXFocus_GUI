@@ -57,6 +57,9 @@ class ParameterPanel(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super(ParameterPanel, self).__init__(parent)
         self._spins = {}
+        #: Fields drawn as a combo box rather than a spin box, keyed by
+        #: parameter name. They store the selected index.
+        self._choices = {}
         #: Parameters a configuration carries but the panel gives no field
         #: for. Without this a saved seed would silently revert to 0 on
         #: reload, which makes a "reproducible" configuration a lie.
@@ -91,6 +94,18 @@ class ParameterPanel(QtWidgets.QWidget):
         form.setLabelAlignment(QtCore.Qt.AlignRight)
         for name in names:
             spec = wolter.param_spec(name)
+            if spec.choices:
+                # A choice, not a quantity: a spin box reading "1" for
+                # "Radial" would be a field nobody can use without the
+                # source. The selected index is what params() stores, which
+                # is why every such field is also an INT_FIELD.
+                combo = QtWidgets.QComboBox()
+                combo.addItems(list(spec.choices))
+                combo.setCurrentIndex(int(spec.default))
+                combo.currentIndexChanged.connect(self.changed)
+                self._choices[name] = combo
+                form.addRow(spec.label + ':', combo)
+                continue
             spin = QtWidgets.QDoubleSpinBox()
             spin.setDecimals(spec.decimals)
             spin.setRange(spec.lo, spec.hi)
@@ -115,6 +130,8 @@ class ParameterPanel(QtWidgets.QWidget):
         for name, spin in self._spins.items():
             value = spin.value()
             setattr(p, name, int(value) if name in wolter.INT_FIELDS else value)
+        for name, combo in self._choices.items():
+            setattr(p, name, int(combo.currentIndex()))
         for name, value in self._carried.items():
             setattr(p, name, value)
         return p
@@ -133,9 +150,20 @@ class ParameterPanel(QtWidgets.QWidget):
         than fifteen half-applied ones.
         """
         adjusted = []
-        for spin in self._spins.values():
-            spin.blockSignals(True)
+        # Combo boxes are blocked in the same window as the spin boxes, so
+        # that the single `changed` promised above stays single.
+        for widget in list(self._spins.values()) + list(self._choices.values()):
+            widget.blockSignals(True)
         try:
+            for name, combo in self._choices.items():
+                if not hasattr(params, name):
+                    continue
+                wanted = int(getattr(params, name))
+                if 0 <= wanted < combo.count():
+                    combo.setCurrentIndex(wanted)
+                else:
+                    adjusted.append((name, wanted, combo.currentIndex()))
+
             for name, spin in self._spins.items():
                 if not hasattr(params, name):
                     continue
@@ -160,8 +188,9 @@ class ParameterPanel(QtWidgets.QWidget):
                 if abs(applied - wanted) > 0.5 * 10 ** -spin.decimals():
                     adjusted.append((name, wanted, applied))
         finally:
-            for spin in self._spins.values():
-                spin.blockSignals(False)
+            for widget in (list(self._spins.values())
+                           + list(self._choices.values())):
+                widget.blockSignals(False)
 
         for name in self._carried:
             if hasattr(params, name):
@@ -241,8 +270,15 @@ class MetricsBar(QtWidgets.QWidget):
         v = self._values
         v['hpd'].setText('%.4f"' % result.hpd_arcsec)
         v['rms'].setText('%.4f"' % result.rms_arcsec)
-        v['rays'].setText('%d / %d' % (result.num_surviving,
-                                       result.num_launched))
+        # With several orders in flight, "surviving" would otherwise quietly
+        # change meaning: it counts the reference order, which is what every
+        # metric beside it is measured on, so the total across the fan is
+        # named separately rather than folded in.
+        rays = '%d / %d' % (result.num_surviving, result.num_launched)
+        total = getattr(result, 'num_surviving_all_orders', 0)
+        if total and total != result.num_surviving:
+            rays += '  (%d all orders)' % total
+        v['rays'].setText(rays)
         v['focus'].setText('%.4f mm' % result.focus_z)
 
         # Rays lost to non-convergence are excluded from the counts above,
