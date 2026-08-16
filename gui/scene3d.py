@@ -138,7 +138,7 @@ def azimuth_for(n_surfaces, max_vertices=MAX_VERTICES_MPL):
 class SceneOptions(collections.namedtuple(
         'SceneOptions',
         'solid mirrors_only max_vertices phi0 dphi show_grooves '
-        'color_by_order')):
+        'color_by_order true_scale')):
     """
     What a backend wants, expressed as choices rather than as capabilities.
 
@@ -151,7 +151,8 @@ class SceneOptions(collections.namedtuple(
 
     @classmethod
     def for_backend(cls, backend, solid=False, mirrors_only=False,
-                    show_grooves=True, color_by_order=True):
+                    show_grooves=True, color_by_order=True,
+                    true_scale=False):
         if backend == 'opengl':
             # A closed shell, because GL depth-tests per fragment and the
             # tab disables depth *writes* on surfaces: the rays inside stay
@@ -159,7 +160,7 @@ class SceneOptions(collections.namedtuple(
             return cls(solid=solid, mirrors_only=mirrors_only,
                        max_vertices=MAX_VERTICES_GL, phi0=0., dphi=2 * np.pi,
                        show_grooves=show_grooves,
-                       color_by_order=color_by_order)
+                       color_by_order=color_by_order, true_scale=true_scale)
         # matplotlib 3.3 has no computed_zorder: plot_surface depth-sorts
         # each surface as a single unit, so an opaque shell swallows the rays
         # inside it as the camera turns.  Half a revolution leaves an open
@@ -168,7 +169,8 @@ class SceneOptions(collections.namedtuple(
                    max_vertices=MAX_VERTICES_MPL,
                    phi0=-np.pi / 2. if solid else 0.,
                    dphi=np.pi if solid else 2 * np.pi,
-                   show_grooves=show_grooves, color_by_order=color_by_order)
+                   show_grooves=show_grooves, color_by_order=color_by_order,
+                   true_scale=true_scale)
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +358,8 @@ def _focus_item(result, patches):
 # Framing
 # ---------------------------------------------------------------------------
 
-def view_transform(patches, paths, z_span, z_box=Z_BOX, span=VIEW_SPAN):
+def view_transform(patches, paths, z_span, z_box=Z_BOX, span=VIEW_SPAN,
+                   isotropic=False):
     """
     How to squash this system into the view box, and by how much.
 
@@ -369,6 +372,11 @@ def view_transform(patches, paths, z_span, z_box=Z_BOX, span=VIEW_SPAN):
     ``compression`` is the ratio between them, which is the number a view has
     to print next to its z axis: an unlabelled 38:1 squash makes a Wolter-I
     look like a Cassegrain.
+
+    ``isotropic`` gives z the same scale as x and y, so nothing is distorted
+    and a convergence angle measured on screen is the real one.  The whole
+    system is then an invisible thread, which is exactly why it is not the
+    default -- it is for looking closely at one part, not at everything.
     """
     values_x = [np.abs(p.x).max() for p in patches]
     values_y = [np.abs(p.y).max() for p in patches]
@@ -384,10 +392,12 @@ def view_transform(patches, paths, z_span, z_box=Z_BOX, span=VIEW_SPAN):
     zhalf = 0.5 * (zhi - zlo)
 
     sxy = span / half_xy
-    sz = (z_box * span) / zhalf
+    # `is` the same object, not merely equal: the compression below divides
+    # them, and a view claiming "1 : 1" must be exactly that.
+    sz = sxy if isotropic else (z_box * span) / zhalf
     return ViewTransform(center=(0., 0., zmid),
                          scale=(sxy, sxy, sz),
-                         compression=(zhalf / half_xy) / z_box,
+                         compression=sxy / sz,
                          span_mm=(half_xy, zlo, zhi),
                          unit_mm=half_xy)
 
@@ -460,7 +470,8 @@ def build_scene(system, result, options):
             items.append(focus)
 
     paths = None if ray is None else (ray.verts[:, 0], ray.verts[:, 1])
-    view = view_transform(patches, paths, z_span)
+    view = view_transform(patches, paths, z_span,
+                          isotropic=options.true_scale)
     if view.compression > 1.5:
         notes.append('z compressed x%.0f' % view.compression)
 

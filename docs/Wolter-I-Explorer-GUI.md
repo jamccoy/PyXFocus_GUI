@@ -20,7 +20,11 @@ Alongside: HPD and RMS radius in arcseconds, surviving ray count, throughput, co
 
 Drawn by the GPU where `pyqtgraph` and `PyOpenGL` are installed and by matplotlib where they are not, from one shared scene description (`gui/scene3d.py`) so the two renderers cannot disagree about the telescope. `PYXFOCUS_3D_BACKEND=opengl` or `=matplotlib` forces one.
 
-Drag to orbit, scroll to zoom, and use **Iso / Down axis / Side x–z / Side y–z** to return to a known viewpoint. **Down axis** is the one a nested design most wants: it shows the shells as concentric annuli and a grating's dispersion as a displacement across them. Re-tracing after a parameter change leaves the camera where you put it.
+Drag to orbit, scroll to zoom **toward the pointer**, ctrl-drag or middle-drag to pan, and use **Iso / Down axis / Side x–z / Side y–z** to return to a known viewpoint. Shift-drag a rectangle — or arm the **Zoom box** button — to frame exactly that region in one gesture.
+
+Zoom is not limited: the only floor is a guard against a degenerate projection. That matters because the interesting features are three to six orders of magnitude smaller than the instrument. A seven-order fan lands across about 30 mm at the focal plane, 5 mm per order, and a single order's spot is roughly 4 microns — so inspecting one means going from metres to microns in the same view. The status line reads the width out the whole way down, which is what keeps that trustworthy once the axis triad is off screen.
+
+**Down axis** is the preset a nested design most wants: it shows the shells as concentric annuli and a grating's dispersion as a displacement across them. Re-tracing after a parameter change leaves the camera where you put it.
 
 The status line under the view carries what the picture cannot say for itself. Above all the **z compression**: a Wolter-I is roughly 8 m long and 20 cm in radius, so drawn to scale it is an invisible thread. The z axis is squashed and the factor is stated, because an unlabelled 38:1 squash makes a Wolter-I look like a Cassegrain. x and y are never squashed against each other — azimuth, tilt and decentre all live in that plane and are the whole reason for the view.
 
@@ -30,6 +34,7 @@ The checkboxes:
 * **Solid shells** shades the surfaces. Under OpenGL these are whole shells: the depth test runs per fragment while depth *writes* are disabled on surfaces, so a shell is transparent to what is inside it and still occludes correctly among the rays. The matplotlib fallback draws half a shell instead, because its 3D axes depth-sort each surface as a single unit — a closed opaque shell would swallow its own rays, differently at every camera angle.
 * **Grooves** draws the grating grooves and the dispersion arrow.
 * **Colour by order** colours each ray by the diffraction order it left the grating in.
+* **True scale (1:1)** gives z the same scale as x and y. Everything else in this view compresses z by 9 to 38 times so an 8 m telescope fits a window, which is honest about lengths but exaggerates every angle along the axis. With 1:1 on, a convergence angle measured on screen is the real one — and the whole system becomes an invisible thread, which is exactly why it is off by default. It is for looking closely at one part, not at everything.
 
 ## Gratings
 

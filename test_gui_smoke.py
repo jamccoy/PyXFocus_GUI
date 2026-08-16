@@ -40,6 +40,7 @@ os.environ['PYXFOCUS_3D_BACKEND'] = 'matplotlib'
 from PyQt5 import QtCore, QtWidgets
 
 from PyXFocus.gui import config
+from PyXFocus.gui import scene3d
 from PyXFocus.gui import settings as S
 from PyXFocus.gui.wolter import WolterParams, PARAM_FIELDS
 
@@ -661,6 +662,114 @@ def test_the_gl_camera_frames_the_whole_scene():
     assert G.fit_distance(0, 0) > 0.
 
 
+def test_zooming_holds_the_point_under_the_cursor():
+    """
+    The defining CAD behaviour, asserted as arithmetic.
+
+    pyqtgraph scales distance about the view centre, so zooming in on
+    anything off-centre pushes it out of frame and you chase it. Holding the
+    cursor point fixed is what makes deep zoom usable at all -- and it is
+    pure geometry, so it needs no GL context to check.
+    """
+    from PyXFocus.gui import tabs as T
+    if not T.opengl_available():
+        return
+    import numpy as np
+    from PyXFocus.gui.tabs import layout3dgl as G
+
+    width, height = 1200, 700
+    center = np.array([3., -2., 40.])
+    for elev, azim in ((22., -60.), (89.9, -90.), (0., 0.)):
+        right, up = G.camera_basis(elev, azim)
+        for at in ((900., 200.), (100., 650.), (600., 350.)):
+            for before, after in ((1000., 500.), (500., 1000.), (900., 1.)):
+                cursor = G.world_at(center, elev, azim, before, width, height,
+                                    at[0], at[1])
+                moved = G.zoom_about(center, cursor, before, after)
+                half_w, half_h = G.half_extents(after, width, height)
+                offset = cursor - moved
+                screen_x = (offset.dot(right) / half_w + 1.) * width / 2.
+                screen_y = (1. - offset.dot(up) / half_h) * height / 2.
+                assert abs(screen_x - at[0]) < 1e-6, (
+                    'cursor drifted in x: %r -> %r' % (at[0], screen_x))
+                assert abs(screen_y - at[1]) < 1e-6, (
+                    'cursor drifted in y: %r -> %r' % (at[1], screen_y))
+
+
+def test_the_zoom_is_not_clamped_short_of_the_detail():
+    """
+    The floor is a guard against degenerate arithmetic, nothing more.
+
+    It was once 0.05 * DEFAULT_DISTANCE, on the mistaken grounds that a fast
+    scroll could drive the distance through zero -- pyqtgraph zooms
+    multiplicatively, so it cannot. What it did do was stop the view 51 mm
+    across: barely wider than the 30 mm diffraction fan, and thousands of
+    times too coarse to look into a single order, whose spot is about four
+    microns across.
+    """
+    from PyXFocus.gui import tabs as T
+    if not T.opengl_available():
+        return
+    from PyXFocus.gui.tabs import layout3dgl as G
+    assert G.MIN_DISTANCE < 1e-4 * G.DEFAULT_DISTANCE, (
+        'the zoom floor is back to being a usability limit: %r' % G.MIN_DISTANCE)
+    assert G.MIN_DISTANCE > 0., 'a zero distance makes the projection singular'
+
+
+def test_the_scale_readout_names_the_right_unit():
+    """
+    A readout wrong by a factor of a thousand is worse than no readout.
+
+    The first version of this table scaled a sub-millimetre width by 1e3 and
+    still labelled it "mm", so a view 1.77 microns across called itself
+    1.77 mm -- in the one control whose entire job is to say how big what
+    you are looking at is.
+    """
+    from PyXFocus.gui import tabs as T
+    if not T.opengl_available():
+        return
+    from PyXFocus.gui.tabs.layout3dgl import GLLayout3DTab as Tab
+    cases = [(8400., '8.4 m'), (235., '235 mm'), (1., '1 mm'),
+             (0.74, '740 &micro;m'), (0.00177, '1.77 &micro;m'),
+             (6.1e-5, '61 nm')]
+    for mm, expected in cases:
+        got = Tab.format_mm(mm)
+        assert got == expected, '%g mm formatted as %r, wanted %r' % (
+            mm, got, expected)
+    assert Tab.format_mm(None) == ''
+    assert Tab.format_mm(float('nan')) == ''
+
+
+def test_a_zoom_box_frames_what_was_dragged():
+    """
+    A box a fifth of the window across zooms in five times, not four or six.
+
+    Both dimensions matter: fitting the width alone would spill a tall box
+    off the top and bottom, which is the same horizontal-fov trap that once
+    made the default view overflow.
+    """
+    from PyXFocus.gui import tabs as T
+    if not T.opengl_available():
+        return
+    from PyXFocus.gui.tabs import layout3dgl as G
+
+    width, height = 1200, 700
+    cases = [
+        ((240, 70), 0.2),      # a fifth wide, a tenth tall: width decides
+        ((120, 175), 0.25),    # a tenth wide, a quarter tall: height decides
+        ((1200, 700), 1.0),    # the whole window changes nothing
+        ((600, 350), 0.5),     # half of each
+    ]
+    for (rect_w, rect_h), expected in cases:
+        got = G.rect_fraction(rect_w, rect_h, width, height)
+        assert abs(got - expected) < 1e-9, (
+            'a %dx%d box in a %dx%d view gave %r, wanted %r'
+            % (rect_w, rect_h, width, height, got, expected))
+
+    # A viewport with no size must not divide by zero on the way to a crash.
+    assert G.rect_fraction(10, 10, 0, 0) == 1.
+
+
 def test_the_3d_tab_blanks_on_none():
     """A cleared tab keeps nothing, labels included."""
     tab, _ = _drawn_3d()
@@ -709,6 +818,36 @@ def test_mirrors_only_zooms_and_repaints():
     zlo, zhi = mirror_z_range(result.params)
     assert after[0] <= zlo and after[1] >= zhi, (
         'mirrors-only clipped the optics: %r excludes %r' % (after, (zlo, zhi)))
+
+
+def test_true_scale_repaints_and_undoes_the_compression():
+    """
+    The toggle reaches the picture, not just the options object.
+
+    Checked on the matplotlib tab because that one draws without a GL
+    context; both tabs build the same scene, so the scene-level behaviour is
+    covered once in test_smoke and the wiring is covered here.
+    """
+    tab, _ = _drawn_3d()
+    painted = tab.paints
+    before = tab.ax.get_box_aspect() if hasattr(tab.ax, 'get_box_aspect') \
+        else None
+
+    tab.true_scale.setChecked(True)
+    assert tab.paints == painted + 1, 'the 1:1 toggle did not repaint'
+    assert tab.options().true_scale is True
+
+    if before is not None:
+        after = tab.ax.get_box_aspect()
+        # The *ratio*, not the components: matplotlib normalises the aspect
+        # tuple, so the absolute numbers shrink as the box deepens and only
+        # z-against-x carries meaning.
+        assert abs(before[2] / before[0] - scene3d.Z_BOX) < 1e-6, (
+            'the compressed aspect is no longer Z_BOX: %r' % (before,))
+        assert after[2] / after[0] > 5 * before[2] / before[0], (
+            'the drawn z aspect did not follow the scale: %r -> %r'
+            % (before, after))
+        assert after[0] == after[1], 'x and y stopped being equal'
 
 
 def test_the_3d_tab_survives_the_solid_toggle():

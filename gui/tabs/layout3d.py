@@ -68,11 +68,18 @@ class Layout3DTab(FigurePane):
             'Draw the grating grooves and the direction its orders disperse '
             'in. Schematic: a real grating has millions of grooves.')
         self.grooves.setChecked(True)
-        for box in (self.mirrors_only, self.solid, self.grooves):
+        self.true_scale = QtWidgets.QCheckBox('True scale (1:1)')
+        self.true_scale.setToolTip(
+            'Give z the same scale as x and y, so nothing is distorted. The '
+            'whole system then reads as a thread, so this is for looking '
+            'closely at one part of it.')
+        self._boxes = (self.mirrors_only, self.solid, self.grooves,
+                       self.true_scale)
+        for box in self._boxes:
             box.toggled.connect(self.force_repaint)
 
         row = QtWidgets.QHBoxLayout()
-        for box in (self.mirrors_only, self.solid, self.grooves):
+        for box in self._boxes:
             row.addWidget(box)
         row.addStretch(1)
         self.layout().insertLayout(0, row)
@@ -83,7 +90,8 @@ class Layout3DTab(FigurePane):
         return scene3d.SceneOptions.for_backend(
             self.backend, solid=self.solid.isChecked(),
             mirrors_only=self.mirrors_only.isChecked(),
-            show_grooves=self.grooves.isChecked())
+            show_grooves=self.grooves.isChecked(),
+            true_scale=self.true_scale.isChecked())
 
     def _draw(self, result):
         ax = self.ax
@@ -173,15 +181,22 @@ class Layout3DTab(FigurePane):
         ax.set_ylim(-half, half)
         ax.set_zlim(zlo, zhi)
 
+        # Derived, not the Z_BOX constant: the drawn z-to-x ratio has to be
+        # whatever undoes the scene's compression, or the picture and the
+        # label it carries disagree. Reduces to Z_BOX at the default
+        # compression and to the true aspect at 1:1 -- where an 8 m
+        # telescope really is drawn twenty times taller than it is wide.
+        squash = scene.view.compression
+        depth = (zhi - zlo) / (2. * half) / squash
+
         # Guard rather than require: nothing in this repo pins a matplotlib
         # version, and a missing box aspect is a cosmetic loss, not a crash.
         if hasattr(ax, 'set_box_aspect'):
-            ax.set_box_aspect((1., 1., Z_BOX))
+            ax.set_box_aspect((1., 1., depth))
         ax.set_proj_type('ortho')
 
         # Saying so is not optional: an unlabelled 38:1 squash makes a
         # Wolter-I look like a Cassegrain.
-        squash = scene.view.compression
         text = 'z [mm]' if squash <= 1.5 else \
             'z [mm]  (compressed x%.0f)' % squash
         ax.set_zlabel(text, labelpad=18)

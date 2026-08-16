@@ -167,9 +167,17 @@ the framing and the z compression are decided once, in `gui/scene3d.py` — so
 the two cannot disagree about the telescope. Set `PYXFOCUS_3D_BACKEND` to
 `opengl` or `matplotlib` to force one.
 
-Drag to orbit, scroll to zoom, and use the **Iso / Down axis / Side** buttons
-to get back to a known viewpoint. Changing a parameter and re-tracing leaves
-the camera where you put it.
+Drag to orbit, scroll to zoom **toward the pointer**, ctrl-drag or middle-drag
+to pan, and use the **Iso / Down axis / Side** buttons to get back to a known
+viewpoint. Shift-drag a rectangle (or arm **Zoom box**) to frame exactly that
+region in one gesture. Changing a parameter and re-tracing leaves the camera
+where you put it.
+
+There is no zoom limit worth speaking of. The status line reads out how wide
+the view is the whole way down — metres to nanometres — which is what makes
+deep zoom trustworthy once the axis triad is off screen. For scale: a
+seven-order fan lands across about 30 mm at the focal plane, 5 mm per order,
+and one order's own spot is roughly 4 microns.
 
 The controls, each there for a reason worth knowing:
 
@@ -184,6 +192,10 @@ The controls, each there for a reason worth knowing:
   fallback has to draw half a shell instead, because its 3D axes depth-sort
   each surface as a single unit and a closed opaque shell would swallow its
   own rays, differently at every camera angle.
+* **True scale (1:1)** gives z the same scale as x and y, so nothing is
+  distorted and a convergence angle measured on screen is the real one. The
+  whole system then reads as a thread, which is why it is off by default —
+  it is for looking closely at one part, not at everything.
 * **Grooves** draws the grating's grooves and an arrow along the direction
   its orders disperse in. The grooves are schematic and the status line says
   so: a 240 mm grating at a 200 nm period has over a million of them.

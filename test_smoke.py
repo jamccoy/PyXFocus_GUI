@@ -969,6 +969,67 @@ def test_mirrors_only_narrows_z_without_clipping_the_optics():
         'mirrors-only clipped the optics: %r excludes %r' % (near, (zlo, zhi)))
 
 
+def test_true_scale_makes_z_match_x_exactly():
+    """
+    1:1 means 1:1, not 1.0000001:1.
+
+    A view that says "x : y : z is 1 : 1 : 1" is a promise that an angle
+    measured on screen is the real one, so the scales are compared with ==.
+    """
+    from PyXFocus.gui import scene3d
+    from PyXFocus.gui.wolter import WolterParams, build_system, trace
+    params = WolterParams(num_rays=500)
+    system, result = build_system(params), trace(params)
+
+    squashed = scene3d.build_scene(
+        system, result, scene3d.SceneOptions.for_backend('opengl'))
+    true = scene3d.build_scene(
+        system, result,
+        scene3d.SceneOptions.for_backend('opengl', true_scale=True))
+
+    assert squashed.view.compression > 1.5, (
+        'premise changed: the default no longer compresses z')
+    sx, sy, sz = true.view.scale
+    assert sz == sx == sy, 'true scale is not exactly equal: %r' % (true.view.scale,)
+    assert true.view.compression == 1., true.view.compression
+
+    # x and y must be untouched by the toggle -- it is a statement about z.
+    assert true.view.scale[0] == squashed.view.scale[0]
+    assert not any('compressed' in note for note in true.notes), true.notes
+
+
+def test_the_scene_box_follows_the_z_scale():
+    """
+    Framing must use the box actually drawn, not the compressed constant.
+
+    Under true scale the z half-extent stops being Z_BOX * VIEW_SPAN and
+    becomes the system's real length times the x scale -- for an 8 m
+    telescope that is over an order of magnitude larger. Framing against the
+    constant would leave every camera preset far too close.
+    """
+    from PyXFocus.gui import scene3d
+    from PyXFocus.gui.wolter import WolterParams, build_system, trace
+    params = WolterParams(num_rays=500)
+    system, result = build_system(params), trace(params)
+
+    def box(**kwargs):
+        scene = scene3d.build_scene(
+            system, result, scene3d.SceneOptions.for_backend('opengl', **kwargs))
+        _, zlo, zhi = scene.view.span_mm
+        return 0.5 * (zhi - zlo) * scene.view.scale[2], scene.view.compression
+
+    (squashed, compression), (true, _) = box(), box(true_scale=True)
+    assert abs(squashed - scene3d.Z_BOX * scene3d.VIEW_SPAN) < 1e-6, (
+        'the compressed box is no longer Z_BOX * VIEW_SPAN: %r' % squashed)
+    # Deeper by exactly the compression that was removed -- 9.2x on this
+    # design, and more on a longer one. Asserted against the reported factor
+    # rather than a round number, so the two cannot drift apart.
+    assert abs(true / squashed - compression) < 1e-9, (
+        'box deepened by %.4f but the view reported a compression of %.4f'
+        % (true / squashed, compression))
+    assert compression > 5., 'premise changed: z is barely compressed now'
+
+
 def test_mirrors_only_trims_rays_at_the_span():
     """
     Zoomed on the optics, a ray is cut where it leaves the view.
