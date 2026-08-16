@@ -156,6 +156,41 @@ def rect_fraction(rect_width, rect_height, view_width, view_height):
                rect_height / float(view_height))
 
 
+def zoom_box_camera(center, box_point, distance, fraction, zoom_in):
+    """
+    Where the camera goes when a rectangle is dragged, either way round.
+
+    Dragged left to right the box is what you want to look at, so the view
+    moves onto it and closes in.  Dragged right to left it is the reverse:
+    the view you have now shrinks *into* that rectangle, so a small box
+    thrown backwards pulls a long way out.  Left-to-right in, right-to-left
+    out is AutoCAD's convention for a drag that means two things.
+
+    The two are exact inverses -- draw a box one way, draw the same box the
+    other, and you are back where you started.  That is what makes the
+    reverse drag an undo you can aim, rather than a second way of guessing.
+    It is also why the outward case is not simply
+    :func:`zoom_about` with a reciprocal ratio, which moves the centre to
+    the wrong place and does not come back.
+    """
+    center = np.asarray(center, dtype=float)
+    box_point = np.asarray(box_point, dtype=float)
+    if zoom_in:
+        return box_point, distance * fraction
+    return center - (box_point - center) / fraction, distance / fraction
+
+
+def pinch_distance(distance, value):
+    """
+    Apply one step of a macOS pinch.
+
+    A trackpad reports magnification as a small incremental delta per event
+    -- a few hundredths -- which accumulates multiplicatively.  Fingers
+    apart is a positive value and means "bigger", so the camera comes in.
+    """
+    return distance / max(1e-3, 1. + float(value))
+
+
 def zoom_about(center, cursor_point, old_distance, new_distance):
     """
     The new view centre that keeps ``cursor_point`` where it is on screen.
@@ -315,25 +350,64 @@ class GLViewWidget(gl.GLViewWidget):
         if self._box_origin is None:
             super(GLViewWidget, self).mouseReleaseEvent(event)
             return
-        rect = QtCore.QRect(self._box_origin, event.pos()).normalized()
-        self._box_origin = None
+        origin, self._box_origin = self._box_origin, None
         self._band.hide()
+        rect = QtCore.QRect(origin, event.pos()).normalized()
         if min(rect.width(), rect.height()) >= self.MIN_BOX_PIXELS:
-            self.zoom_to_rect(rect)
+            # Direction, which normalized() throws away: left to right means
+            # "look at this", right to left means "shrink what I have into
+            # this". A vertical-only drag is neither, and reads as inward.
+            self.zoom_to_rect(rect, zoom_in=event.pos().x() >= origin.x())
         event.accept()
 
-    def zoom_to_rect(self, rect):
-        """Frame a screen rectangle: put its centre in view and fill to it."""
+    def zoom_to_rect(self, rect, zoom_in=True):
+        """Frame a screen rectangle, or fall back out through it."""
         width, height = max(1, self.width()), max(1, self.height())
         distance = float(self.opts['distance'])
-        center = world_at(self.opts['center'], self.opts['elevation'],
-                          self.opts['azimuth'], distance, width, height,
-                          rect.center().x(), rect.center().y(),
-                          self.opts['fov'])
+        point = world_at(self.opts['center'], self.opts['elevation'],
+                         self.opts['azimuth'], distance, width, height,
+                         rect.center().x(), rect.center().y(),
+                         self.opts['fov'])
 
         fraction = rect_fraction(rect.width(), rect.height(), width, height)
+        center, moved = zoom_box_camera(self.opts['center'], point, distance,
+                                        fraction, zoom_in)
         self.opts['center'] = pg.Vector(*center)
-        self.opts['distance'] = max(MIN_DISTANCE, distance * fraction)
+        self.opts['distance'] = max(MIN_DISTANCE, moved)
+        self.update()
+        self.cameraChanged.emit()
+
+    # -- trackpad ----------------------------------------------------------
+
+    def event(self, ev):
+        """
+        Catch the macOS pinch, which arrives as a native gesture.
+
+        Not a wheel event and not a touch event: Qt delivers trackpad
+        magnification as QEvent.NativeGesture, which has no dedicated
+        handler to override, so it has to be picked out of event() by type.
+        Everything else falls straight through.
+        """
+        if ev.type() == QtCore.QEvent.NativeGesture \
+                and ev.gestureType() == QtCore.Qt.ZoomNativeGesture:
+            self.pinch(ev.value(), ev.localPos())
+            return True
+        return super(GLViewWidget, self).event(ev)
+
+    def pinch(self, value, position=None):
+        """One step of a pinch, about the fingers rather than the centre."""
+        width, height = max(1, self.width()), max(1, self.height())
+        before = float(self.opts['distance'])
+        if position is None:
+            position = QtCore.QPointF(width / 2., height / 2.)
+        point = world_at(self.opts['center'], self.opts['elevation'],
+                         self.opts['azimuth'], before, width, height,
+                         position.x(), position.y(), self.opts['fov'])
+
+        after = max(MIN_DISTANCE, pinch_distance(before, value))
+        self.opts['distance'] = after
+        self.opts['center'] = pg.Vector(
+            *zoom_about(self.opts['center'], point, before, after))
         self.update()
         self.cameraChanged.emit()
 
@@ -396,8 +470,11 @@ class GLLayout3DTab(PaintGate, QtWidgets.QWidget):
         self.zoom_box.setText('Zoom box')
         self.zoom_box.setCheckable(True)
         self.zoom_box.setToolTip(
-            'Drag a rectangle to zoom to it. Shift and drag does the same '
-            'without arming this.')
+            'Drag a rectangle to zoom to it. Drag it left-to-right to zoom '
+            'in on that box, right-to-left to zoom back out through it -- '
+            'the two are exact opposites, so the reverse drag undoes the '
+            'first. Shift and drag does the same without arming this.\n\n'
+            'On a trackpad, pinch to zoom.')
         self.zoom_box.toggled.connect(self._arm_zoom_box)
 
         controls = QtWidgets.QHBoxLayout()

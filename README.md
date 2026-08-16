@@ -170,8 +170,10 @@ the two cannot disagree about the telescope. Set `PYXFOCUS_3D_BACKEND` to
 Drag to orbit, scroll to zoom **toward the pointer**, ctrl-drag or middle-drag
 to pan, and use the **Iso / Down axis / Side** buttons to get back to a known
 viewpoint. Shift-drag a rectangle (or arm **Zoom box**) to frame exactly that
-region in one gesture. Changing a parameter and re-tracing leaves the camera
-where you put it.
+region in one gesture — **left-to-right zooms in on the box, right-to-left
+zooms back out through it**, and the two are exact opposites, so the reverse
+drag undoes the first. On a trackpad, **pinch to zoom**. Changing a parameter
+and re-tracing leaves the camera where you put it.
 
 There is no zoom limit worth speaking of. The status line reads out how wide
 the view is the whole way down — metres to nanometres — which is what makes

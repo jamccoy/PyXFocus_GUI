@@ -20,7 +20,9 @@ Alongside: HPD and RMS radius in arcseconds, surviving ray count, throughput, co
 
 Drawn by the GPU where `pyqtgraph` and `PyOpenGL` are installed and by matplotlib where they are not, from one shared scene description (`gui/scene3d.py`) so the two renderers cannot disagree about the telescope. `PYXFOCUS_3D_BACKEND=opengl` or `=matplotlib` forces one.
 
-Drag to orbit, scroll to zoom **toward the pointer**, ctrl-drag or middle-drag to pan, and use **Iso / Down axis / Side x–z / Side y–z** to return to a known viewpoint. Shift-drag a rectangle — or arm the **Zoom box** button — to frame exactly that region in one gesture.
+Drag to orbit, scroll to zoom **toward the pointer**, ctrl-drag or middle-drag to pan, and use **Iso / Down axis / Side x–z / Side y–z** to return to a known viewpoint. Shift-drag a rectangle — or arm the **Zoom box** button — to frame exactly that region in one gesture. The drag is reversible: **left to right** means "look at this box" and closes in on it, **right to left** means "shrink what I have into this box" and pulls back out. They are exact inverses, so drawing the same rectangle the other way returns you precisely where you were, which makes the reverse drag an undo you can aim rather than a second guess. (Left-to-right in, right-to-left out is AutoCAD's convention for a drag that means two things.)
+
+On a Mac trackpad, **pinch to zoom** — it zooms about the fingers, like the wheel zooms about the pointer. Two-finger scroll still zooms as well.
 
 Zoom is not limited: the only floor is a guard against a degenerate projection. That matters because the interesting features are three to six orders of magnitude smaller than the instrument. A seven-order fan lands across about 30 mm at the focal plane, 5 mm per order, and a single order's spot is roughly 4 microns — so inspecting one means going from metres to microns in the same view. The status line reads the width out the whole way down, which is what keeps that trustworthy once the axis triad is off screen.
 

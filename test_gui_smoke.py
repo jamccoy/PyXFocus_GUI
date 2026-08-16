@@ -770,6 +770,78 @@ def test_a_zoom_box_frames_what_was_dragged():
     assert G.rect_fraction(10, 10, 0, 0) == 1.
 
 
+def test_the_zoom_box_is_exactly_reversible():
+    """
+    Drag a box one way, drag the same box back, and nothing has changed.
+
+    That exactness is the point: it makes the reverse drag an undo you can
+    aim rather than a second way of guessing. It also pins down why the
+    outward case is not zoom_about with a reciprocal ratio -- that moves the
+    centre somewhere else and does not come back, which is easy to write and
+    hard to notice.
+    """
+    from PyXFocus.gui import tabs as T
+    if not T.opengl_available():
+        return
+    import numpy as np
+    from PyXFocus.gui.tabs import layout3dgl as G
+
+    width, height = 1200, 700
+    elev, azim = 22., -60.
+    for rect in ((300, 150, 240, 140), (700, 420, 180, 260),
+                 (100, 60, 900, 500)):
+        x, y, rect_w, rect_h = rect
+        start_center, start_distance = np.array([3., -2., 40.]), 1000.
+        fraction = G.rect_fraction(rect_w, rect_h, width, height)
+        at = (x + rect_w / 2., y + rect_h / 2.)
+
+        for first in (True, False):
+            center, distance = start_center, start_distance
+            for zoom_in in (first, not first):
+                point = G.world_at(center, elev, azim, distance, width,
+                                   height, at[0], at[1])
+                center, distance = G.zoom_box_camera(
+                    center, point, distance, fraction, zoom_in)
+            assert abs(distance - start_distance) < 1e-9, (
+                'box %r: distance did not return, %r' % (rect, distance))
+            assert np.allclose(center, start_center, atol=1e-9), (
+                'box %r: centre did not return, %r' % (rect, center))
+
+    # And the directions really are opposites, not both inward.
+    inward = G.zoom_box_camera(np.zeros(3), np.zeros(3), 100., 0.25, True)[1]
+    outward = G.zoom_box_camera(np.zeros(3), np.zeros(3), 100., 0.25, False)[1]
+    assert inward < 100. < outward, (inward, outward)
+
+
+def test_a_pinch_zooms_the_way_the_fingers_go():
+    """
+    macOS reports magnification as a small incremental delta per event.
+
+    Fingers apart is positive and means "bigger", so the camera distance has
+    to come *down* -- the sign is the whole of it, and getting it backwards
+    would be immediately infuriating and not at all obvious from the code.
+    """
+    from PyXFocus.gui import tabs as T
+    if not T.opengl_available():
+        return
+    from PyXFocus.gui.tabs import layout3dgl as G
+
+    assert G.pinch_distance(1000., 0.05) < 1000., 'pinch out must zoom in'
+    assert G.pinch_distance(1000., -0.05) > 1000., 'pinch in must zoom out'
+    assert G.pinch_distance(1000., 0.) == 1000.
+
+    # Accumulating deltas multiply, so twenty small steps are a big change.
+    distance = 1000.
+    for _ in range(20):
+        distance = G.pinch_distance(distance, 0.05)
+    assert distance < 400., 'twenty pinch steps barely moved: %r' % distance
+
+    # A pathological delta must not produce a negative or infinite distance.
+    for bad in (-1., -5., -1e9):
+        out = G.pinch_distance(1000., bad)
+        assert out > 0 and out < float('inf'), (bad, out)
+
+
 def test_the_3d_tab_blanks_on_none():
     """A cleared tab keeps nothing, labels included."""
     tab, _ = _drawn_3d()
