@@ -17,10 +17,22 @@ interpreter changes.
 ``~/Library/Logs/PyXFocus.log`` and raises a native dialog naming that log if
 the GUI exits non-zero, rather than just bouncing the Dock icon once.
 
-Because this project has no virtualenv and no console-script entry point
-(deliberately -- see the README), the launcher points at a fixed interpreter
-rather than a ``.venv/bin/python``, and it must ``cd`` to the *parent* of the
-``PyXFocus`` folder before running ``python -m PyXFocus.gui.app``: the
+The interpreter is baked in as an absolute path, which is the whole point:
+several Pythons on one machine is the normal case, and the compiled Fortran
+extensions are built per interpreter, so "whichever python is on PATH" is
+not a thing this application can be launched with.  Point it at the project's
+own ``.venv/bin/python`` -- see requirements.txt -- and the bundle, the tests
+and the extensions all refer to one environment.
+
+(An earlier version of this note claimed the project had no virtualenv
+"deliberately -- see the README". The README said no such thing; it said the
+opposite, that becoming pip-installable was the proper fix. The absence was
+an accident, and it cost a release where pyqtgraph was installed into a
+Python the launcher never ran.)
+
+There is still no console-script entry point, so the launcher must ``cd`` to
+the *parent* of the ``PyXFocus`` folder before running
+``python -m PyXFocus.gui.app``: the
 package is imported by that name, and the folder has to be named that too,
 so running from anywhere else reproduces the
 ``ModuleNotFoundError: No module named 'PyXFocus'`` trap the README warns

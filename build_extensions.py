@@ -37,6 +37,30 @@ EXTENSIONS = [
 ]
 
 
+def build_env():
+    """
+    The environment f2py needs to find ``include 'specialFunctions.f95'``.
+
+    Three of the sources open with that line, and it is resolved by the
+    *Fortran compiler*, relative to its working directory -- not by f2py.
+
+    Up to Python 3.11 that came free: f2py used the distutils backend, which
+    compiled in the source directory.  Python 3.12 removed distutils, so f2py
+    switches to the meson backend, which builds in a temporary directory
+    where a bare 'specialFunctions.f95' cannot be found -- and zernsurf,
+    surfacesf and woltsurf, exactly the three that include it, fail with
+    "Cannot open included file".
+
+    FFLAGS and not ``--f90flags``: the meson backend ignores the f2py flag
+    and honours the environment variable.  Prepended rather than replaced, so
+    a caller's own FFLAGS still apply.
+    """
+    root = os.path.dirname(os.path.abspath(__file__))
+    env = dict(os.environ)
+    env['FFLAGS'] = ('-I%s %s' % (root, env.get('FFLAGS', ''))).strip()
+    return env
+
+
 def build(name, source, use_openmp=True):
     """Compile one extension, returning True on success."""
     cmd = [sys.executable, '-m', 'numpy.f2py', '-c', '-m', name, source]
@@ -45,7 +69,7 @@ def build(name, source, use_openmp=True):
 
     print('building %s from %s' % (name, source))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT)
+                            stderr=subprocess.STDOUT, env=build_env())
     output = proc.communicate()[0].decode('utf-8', 'replace')
 
     if proc.returncode != 0:

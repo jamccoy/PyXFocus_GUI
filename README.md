@@ -44,21 +44,25 @@ stops mattering; until then, the explicit clone target is the workaround.)
 
 ### 1. Requirements
 
-* Python 3, numpy, scipy, matplotlib
+* Python 3.9 or newer (3.12 is what `requirements.txt` pins against)
 * `gfortran` (macOS: `brew install gcc`; Debian/Ubuntu: `apt install gfortran`)
-* PyQt5, only if you want the GUI
-* `pyqtgraph` and `PyOpenGL`, only for the GPU-drawn 3D layout tab. Without
-  them that tab still works, drawn by matplotlib instead, so this is an
-  upgrade rather than a requirement:
+* Everything else is in `requirements.txt`
 
-  ```bash
-  pip install "pyqtgraph>=0.12.4" PyOpenGL
-  ```
+**Use a virtual environment owned by this project.** The package has no
+metadata, so `import PyXFocus` resolves by folder name and `sys.path`, and the
+Fortran extensions are compiled per interpreter — so on a machine with several
+Pythons, installing a dependency into the wrong one is silent, and the
+application keeps working quietly without it.
 
-  Tested with pyqtgraph 0.12.4. The 0.13 line requires numpy >= 1.22, which
-  is newer than this project needs. Set `PYXFOCUS_3D_BACKEND` to `opengl` or
-  `matplotlib` to force one renderer; the default picks OpenGL where it can
-  be imported.
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+Use `.venv/bin/python` for everything below, and point the launcher at it.
+`pyqtgraph` and `PyOpenGL` are needed only by the GPU-drawn 3D layout tab;
+without them it still works, drawn by matplotlib. `PYXFOCUS_3D_BACKEND=opengl`
+or `=matplotlib` forces a renderer.
 
 ### 2. Build the Fortran extensions
 

@@ -13,21 +13,39 @@ cd PyXFocus
 
 ## 1. Requirements
 
-* Python 3, numpy, scipy, matplotlib
+* Python 3.9 or newer (3.12 is what `requirements.txt` pins against)
 * `gfortran` (macOS: `brew install gcc`; Debian/Ubuntu: `apt install gfortran`)
-* PyQt5, only if you want the GUI
-* `pyqtgraph` and `PyOpenGL`, only for the GPU-drawn 3D layout tab. Without
-  them that tab still works, drawn by matplotlib instead, so this is an
-  upgrade rather than a requirement:
+* Everything else is in `requirements.txt`
 
-  ```bash
-  pip install "pyqtgraph>=0.12.4" PyOpenGL
-  ```
+### Use a virtual environment owned by this project
 
-  Tested with pyqtgraph 0.12.4. The 0.13 line requires numpy >= 1.22, which
-  is newer than this project needs. Set `PYXFOCUS_3D_BACKEND` to `opengl` or
-  `matplotlib` to force one renderer; the default picks OpenGL where it can
-  be imported.
+Not optional advice. This repository has no package metadata, so
+`import PyXFocus` resolves by folder name and `sys.path`. On a machine with
+several Pythons that is genuinely ambiguous, and the Fortran extensions make
+it worse: they are compiled **per interpreter**, so a `.so` built by one
+Python is invisible to another. Installing a dependency into the wrong
+interpreter is silent — the application keeps working, quietly without it.
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+Then use `.venv/bin/python` for everything below, and point the launcher at
+it (see §4). One environment, named once.
+
+`pyqtgraph` and `PyOpenGL` are in there but are needed only by the GPU-drawn
+3D layout tab; without them that tab still works, drawn by matplotlib
+instead. `PYXFOCUS_3D_BACKEND=opengl` or `=matplotlib` forces a renderer, and
+this prints which one you would get:
+
+```bash
+.venv/bin/python -c "from PyXFocus.gui import tabs; print(tabs.opengl_available())"
+```
+
+Run that from the directory *containing* `PyXFocus`, and run it with the same
+interpreter the application uses — that is exactly the check whose absence
+let a release ship with the GPU renderer silently disabled.
 
 ## 2. Build the Fortran extensions
 
@@ -37,7 +55,9 @@ The repository ships pre-built **Windows** `.dll` files only. On macOS and Linux
 python build_extensions.py
 ```
 
-This builds six extension modules (`surfacesf`, `woltsurf`, `zernsurf`, `transformationsf`, `reconstruct`, `specialfunctions`). It calls f2py through `python -m numpy.f2py`, which guarantees they are built for the same interpreter that will import them — if you build with one Python and import with another, the modules will appear to be missing.
+This builds six extension modules (`surfacesf`, `woltsurf`, `zernsurf`, `transformationsf`, `reconstruct`, `specialfunctions`). It calls f2py through `python -m numpy.f2py`, which guarantees they are built for the same interpreter that will import them — if you build with one Python and import with another, the modules will appear to be missing. Run it as `.venv/bin/python build_extensions.py` for the same reason.
+
+On Python 3.12 and newer this needs `meson` and `ninja`, which `requirements.txt` installs: 3.12 removed `distutils`, so f2py falls back to its meson backend. That backend compiles in a temporary directory, where the `include 'specialFunctions.f95'` at the top of three of the sources cannot be resolved — so `build_extensions.py` puts the source directory on the Fortran include path via `FFLAGS`. (`--f90flags` does not work here; the meson backend ignores it.)
 
 ## 3. Check it worked
 

@@ -410,7 +410,7 @@ subroutine woltersecLL(x,y,z,l,m,n,ux,uy,uz,num,r0,z0,psi,zmax,zmin,dphi,coeff,a
   p = z0*tan(4*alpha)*tan(thetap)
   d = z0*tan(4*alpha)*tan(4*alpha-thetah)
   e = cos(4*alpha)*(1+tan(4*alpha)*tan(thetah))
-  !print *, “Parameters ok”,p
+  !print *, "Parameters ok",p
   !read *, dum
 
   !Loop through rays and trace to mirror

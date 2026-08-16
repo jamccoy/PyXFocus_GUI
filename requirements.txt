@@ -1,0 +1,42 @@
+# Pinned runtime dependencies for the Wolter-I Explorer.
+#
+# Install into a virtual environment owned by this project, not into a system
+# or conda interpreter:
+#
+#     python3.12 -m venv .venv
+#     .venv/bin/python -m pip install -r requirements.txt
+#     .venv/bin/python build_extensions.py
+#
+# Why pinned, and why a venv at all: this repository has no package metadata,
+# so `import PyXFocus` resolves by folder name and sys.path. On a machine with
+# several interpreters that is genuinely ambiguous -- a `pip install` can land
+# in a Python the application never runs, and the compiled Fortran extensions
+# (.so files, one build per interpreter) silently will not match. Naming one
+# environment is what makes "the app" a definite thing.
+#
+# numpy is held below 2.0 deliberately. test_smoke.py asserts trace output
+# against a reference table with == rather than a tolerance, and a change to
+# how numpy orders a reduction can move the last bits. 1.26.4 reproduces that
+# table byte for byte; before raising this pin, run test_smoke.py FIRST and
+# treat any parity failure as a decision to re-baseline, not a formality.
+numpy==1.26.4
+scipy==1.11.4
+matplotlib==3.8.4
+
+# Only the GUI needs these. The raytracer and test_smoke.py do not.
+PyQt5==5.15.11
+
+# Only the GPU-drawn 3D layout tab needs these. Without them that tab still
+# works, drawn by matplotlib instead -- so they are a genuine upgrade rather
+# than a requirement, and PYXFOCUS_3D_BACKEND forces either renderer.
+pyqtgraph==0.13.7
+PyOpenGL==3.1.10
+
+# Build-time only, and only on Python >= 3.12: distutils was removed there, so
+# f2py falls back to its meson backend, which needs both of these on PATH.
+meson==1.12.0; python_version >= "3.12"
+ninja==1.13.0; python_version >= "3.12"
+
+# Building the bundled HTML documentation (tools/build_docs.py). Reading it
+# needs nothing; only regenerating it after editing docs/*.md does.
+markdown==3.10.3

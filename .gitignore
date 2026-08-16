@@ -13,3 +13,6 @@
 # The macOS launcher is a local build artifact (tools/make_launcher.py
 # regenerates it, with this machine's interpreter path baked in).
 *.app/
+# The project's virtual environment. requirements.txt is what is versioned;
+# the environment built from it is not.
+.venv/

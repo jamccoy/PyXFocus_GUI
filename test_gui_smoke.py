@@ -667,8 +667,11 @@ def test_the_3d_tab_blanks_on_none():
     assert tab.ax.collections or tab.ax.lines
     tab.set_result(None)
     tab.flush()
-    assert tab.ax.collections == []
-    assert tab.ax.lines == []
+    # len(), not == [] : matplotlib 3.7 made these immutable ArtistList
+    # views rather than plain lists, and an ArtistList never compares equal
+    # to a list. len() reads the same on 3.3 and on 3.8.
+    assert len(tab.ax.collections) == 0
+    assert len(tab.ax.lines) == 0
     assert tab.ax.get_title() == ''
 
 
@@ -853,7 +856,7 @@ def test_the_layout_tab_clears_its_inset():
     tab.set_result(None)
     tab.flush()
     assert tab._inset is None
-    assert tab.ax.lines == []
+    assert len(tab.ax.lines) == 0        # ArtistList on matplotlib >= 3.7
 
 
 class _Probe(object):
