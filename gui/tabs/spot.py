@@ -56,6 +56,11 @@ class SpotTab(FigurePane):
             ax.scatter(*result.spot_arcsec, s=1, alpha=.3, color=_SPOT_COLOR,
                        edgecolors='none')
             return
+        # Resolving power belongs in the legend rather than a table of its
+        # own: it is per order, and the legend is already the per-order key
+        # the reader is looking at.
+        power = (result.resolving_power()
+                 if hasattr(result, 'resolving_power') else None) or {}
         # The same colours the 3D view gives the rays, so an order can be
         # followed from where it leaves the grating to where it lands. That
         # is why the table lives in scene3d, which imports no Qt, rather
@@ -63,6 +68,9 @@ class SpotTab(FigurePane):
         for m, (x, y) in by_order.items():
             if not len(x):
                 continue
+            label = 'm = %+d' % m if m else 'm = 0'
+            if m in power:
+                label += '   R = %.0f' % power[m]
             ax.scatter(x, y, s=1, alpha=.4, edgecolors='none',
                        color=scene3d.color_for_order(m, alpha=1.)[:3],
-                       label='m = %+d' % m if m else 'm = 0')
+                       label=label)

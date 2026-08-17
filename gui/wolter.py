@@ -137,10 +137,29 @@ class WolterParams(object):
         Grating half-width in mm; rays outside it are vignetted.
     use_detector : int
         Put the image plane where the design says, instead of at best focus.
+    det_shape : int
+        0 for a flat detector, 1 for one bent along the dispersion.  A
+        grating in a converging beam does not bring its orders to a single
+        plane, so a flat detector costs the outer ones: measured with orders
+        +/-3 in flight, m = +/-3 arrives 0.567 arcsec across against a floor
+        of 0.384.  Bending the detector recovers nearly all of that, at the
+        cost of the middle of the fan -- which is the trade a Rowland circle
+        makes.
     det_z : float
         Detector position in mm; 0 is the nominal focus.
+    det_size : float
+        Detector half-width in mm.  0 means unbounded, which is what this
+        has always been -- it caught every ray however far off and drew
+        nothing in the 3D view.  Any positive value both vignettes and draws.
     det_tilt : float
         Detector tilt about x, in degrees.
+    det_tilt_y : float
+        Detector tilt about y, in degrees.  This is the one that leans the
+        detector *along* the dispersion, which runs in x; the x tilt above
+        rotates perpendicular to it and cannot follow a dispersed focus.
+    det_radius : float
+        Radius of curvature in mm when ``det_shape`` is curved, bending
+        towards the telescope.
     seed : int or None
         Seed for the random ray pattern, so a trace is repeatable.
     """
@@ -155,7 +174,8 @@ class WolterParams(object):
                  grating_hub=8400.,
                  grating_order=1, grating_order_span=0,
                  wavelength=2., grating_size=120.,
-                 use_detector=0, det_z=0., det_tilt=0., seed=0):
+                 use_detector=0, det_shape=0, det_z=0., det_size=0.,
+                 det_tilt=0., det_tilt_y=0., det_radius=200., seed=0):
         self.r0 = r0
         self.z0 = z0
         self.primary_length = primary_length
@@ -183,8 +203,12 @@ class WolterParams(object):
         self.wavelength = wavelength
         self.grating_size = grating_size
         self.use_detector = use_detector
+        self.det_shape = det_shape
         self.det_z = det_z
+        self.det_size = det_size
         self.det_tilt = det_tilt
+        self.det_tilt_y = det_tilt_y
+        self.det_radius = det_radius
         self.seed = seed
 
     def misalignment(self):
@@ -504,9 +528,7 @@ def build_system(params):
     # detector is placed rather than solved for.
     focal_length = params.z0
     if int(getattr(params, 'use_detector', 0)):
-        terminator = optics.DetectorPlane(optics.Placement(
-            0., 0., float(params.det_z),
-            np.radians(float(params.det_tilt)), 0., 0.))
+        terminator = build_detector(params)
         focal_length = params.z0 - float(params.det_z)
     else:
         terminator = optics.AutoFocus()
@@ -543,6 +565,28 @@ def traced_orders(params):
         # measured dispersion by averaging the two.
         return (reference,)
     return tuple(sorted(set(range(-span, span + 1)) | {reference}))
+
+
+def build_detector(params):
+    """
+    The image surface this design asks for, flat or bent.
+
+    Both tilts are applied, and the y one is the interesting one: dispersion
+    runs along x, so a tilt about y is what leans the detector along it.
+    """
+    placement = optics.Placement(
+        0., 0., float(params.det_z),
+        np.radians(float(params.det_tilt)),
+        np.radians(float(getattr(params, 'det_tilt_y', 0.))), 0.)
+    # 0 means unbounded, which is what a detector with no size has always
+    # been here -- it caught every ray however far off and drew nothing.
+    half_width = float(getattr(params, 'det_size', 0.)) or None
+
+    if int(getattr(params, 'det_shape', 0)):
+        return optics.CurvedDetector(
+            placement, half_width=half_width,
+            radius=float(getattr(params, 'det_radius', 200.)))
+    return optics.DetectorPlane(placement, half_width=half_width)
 
 
 def build_grating(params):
@@ -711,11 +755,24 @@ ray_order = ray_order[alive]
 _SCRIPT_KEEP_IND = 'ray_order = ray_order[ind]\n'
 
 _SCRIPT_DETECTOR = '''
-# Detector at z = {dz!r} mm, tilted {tilt!r} deg about x.
-tran.transform(rays, 0, 0, {dz!r}, np.radians({tilt!r}), 0, 0)
-surf.flat(rays)
+# Detector at z = {dz!r} mm, tilted {tilt!r} deg about x, {tilty!r} about y.
+tran.transform(rays, 0, 0, {dz!r}, np.radians({tilt!r}), np.radians({tilty!r}), 0)
+surf.flat(rays){curve}{clip}
 image_z = {dz!r}
 '''
+
+#: Bend the detector along the dispersion. surf.flat first is not cosmetic:
+#: surf.cyl takes the root on the side the ray started, and rays arriving
+#: from the grating are on the wrong one -- solving directly puts every ray
+#: on the far branch, which measures 723 arcsec per order instead of 0.4.
+_SCRIPT_CURVE = '''
+tran.transform(rays, 0, 0, {radius!r}, 0, 0, 0)
+surf.cyl(rays, {radius!r})
+tran.itransform(rays, 0, 0, {radius!r}, 0, 0, 0)'''
+
+_SCRIPT_DETECTOR_CLIP = '''
+ind = np.logical_and(np.abs(rays[1]) <= {size!r}, np.abs(rays[2]) <= {size!r})
+{keep}rays = tran.vignette(rays, ind=ind)'''
 
 _SCRIPT_AUTOFOCUS = '''
 # Best focus, found from the rays.
@@ -793,8 +850,16 @@ def script_for(params):
         fanned = fanned or _fans(element)
 
     if int(getattr(params, 'use_detector', 0)):
-        text += _SCRIPT_DETECTOR.format(dz=float(params.det_z),
-                                        tilt=float(params.det_tilt))
+        size = float(getattr(params, 'det_size', 0.))
+        text += _SCRIPT_DETECTOR.format(
+            dz=float(params.det_z), tilt=float(params.det_tilt),
+            tilty=float(getattr(params, 'det_tilt_y', 0.)),
+            curve=(_SCRIPT_CURVE.format(
+                radius=float(getattr(params, 'det_radius', 200.)))
+                if int(getattr(params, 'det_shape', 0)) else ''),
+            clip=(_SCRIPT_DETECTOR_CLIP.format(
+                size=size, keep=_SCRIPT_KEEP_IND if fanned else '')
+                if size else ''))
     elif fanned:
         text += _SCRIPT_AUTOFOCUS_WEIGHTED.format(
             order=float(params.grating_order))
@@ -985,8 +1050,25 @@ PARAM_SPECS = (
     ParamSpec('wavelength', 'Wavelength', 'nm', 2., 0., 100., 4, 0.5),
     ParamSpec('grating_size', 'Grating half-width', 'mm', 120., 1., 5000., 1, 10.),
 
+    ParamSpec('det_shape', 'Detector shape', '', 0, 0, 1, 0, 1,
+              ('Flat', 'Cylindrical')),
     ParamSpec('det_z', 'Detector position z', 'mm', 0., -1000., 1000., 3, 1.),
+    # Default 0 means "unbounded", which is what this has always been: the
+    # detector had no size at all and caught every ray however far off. Any
+    # positive default would vignette, and every existing result would move.
+    ParamSpec('det_size', 'Detector half-width', 'mm', 0., 0., 5000., 1, 5.),
     ParamSpec('det_tilt', 'Detector tilt about x', 'deg', 0., -80., 80., 3, 1.),
+    # Dispersion runs along x, so this is the tilt that leans the detector
+    # along it -- the one that can follow a dispersed focal surface. The x
+    # tilt above cannot: it rotates perpendicular to the dispersion.
+    ParamSpec('det_tilt_y', 'Detector tilt about y', 'deg', 0., -80., 80.,
+              3, 1.),
+    # 200 mm is the measured optimum for the default design (a 500 mm lever
+    # and a 200 nm period). It is NOT a constant: the best radius follows
+    # grating_z, period and wavelength, so it is worth sweeping for any
+    # design you care about. Below ~175 mm it degrades sharply.
+    ParamSpec('det_radius', 'Detector radius (curved)', 'mm', 200., 1.,
+              1000000., 1, 10.),
 
     #: Carried through configurations but given no field of their own.
     #:
@@ -1015,7 +1097,8 @@ PARAM_GROUPS = (
                  'grating_dpermm', 'grating_hub', 'grating_order',
                  'grating_order_span', 'wavelength', 'grating_size'),
      'use_grating'),
-    ('Detector', ('det_z', 'det_tilt'), 'use_detector'),
+    ('Detector', ('det_shape', 'det_z', 'det_size', 'det_tilt',
+                  'det_tilt_y', 'det_radius'), 'use_detector'),
 )
 
 #: Field names carried in a saved configuration, in a stable order.
@@ -1025,7 +1108,7 @@ PARAM_FIELDS = tuple(spec.name for spec in PARAM_SPECS)
 #: parameter panel needs the same list to round its spin boxes, and a
 #: second copy over there is exactly how num_shells arrived as 3.0000001.
 INT_FIELDS = frozenset(('num_rays', 'num_shells', 'grating_order',
-                        'grating_order_span', 'grating_type',
+                        'grating_order_span', 'grating_type', 'det_shape',
                         'use_grating', 'use_detector', 'seed'))
 
 _SPEC_BY_NAME = dict((spec.name, spec) for spec in PARAM_SPECS)

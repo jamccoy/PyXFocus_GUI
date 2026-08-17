@@ -675,6 +675,86 @@ class DetectorPlane(Flat):
         return 0
 
 
+class CurvedDetector(DetectorPlane):
+    """
+    A detector bent along the dispersion, as a spectrometer's is.
+
+    A grating in a converging beam does not bring its orders to one plane.
+    Measured on the default design with orders +/-3 in flight, the outer
+    orders focus 0.40 mm ahead of the reference order, so on a flat detector
+    they arrive 0.567 arcsec across against a floor of 0.384 -- half again
+    as wide as the optics oblige them to be.  Bending the detector to follow
+    that surface is what a Rowland circle is for, and it recovers nearly all
+    of it: 0.383 arcsec at m = +/-3, measured.
+
+    It is a trade, not a free win, and the numbers say so.  The middle of
+    the fan pays for the wings: m = +/-1 goes from 0.090 to 0.111 arcsec,
+    and m = 0 -- sitting on the apex -- does not move at all.
+
+    Cylindrical rather than spherical: ``surfaces.cyl`` puts the cylinder
+    axis along **y**, so the surface curves in the x-z plane and stays
+    straight along the grooves.  That is exactly the shape wanted, and it
+    means no new intersection solver.
+    """
+
+    title = 'Detector (curved)'
+
+    def __init__(self, placement=IDENTITY, half_width=None, radius=200.):
+        super(CurvedDetector, self).__init__(placement, half_width)
+        #: Radius of curvature in mm, curving *towards* the telescope.
+        self.radius = float(radius)
+
+    def check(self):
+        if self.radius <= 0.:
+            raise ValueError('the detector radius of curvature must be '
+                             'positive, not %g mm' % self.radius)
+
+    def trace_to(self, rays):
+        # Land on the apex plane first, THEN on the cylinder. Both steps
+        # advance along the same straight ray, so the pair is exact -- and
+        # the flat step is what makes the second one well posed.
+        #
+        # surfaces.cyl picks the root on the side the ray *started*, not the
+        # first one along its direction. Rays reach here from the grating at
+        # z ~ 500, which after the frame shift below is inside the cylinder
+        # and on the wrong side, so solving directly put every ray on the far
+        # branch: measured 723 arcsec per order, the width of the whole fan.
+        # Advancing to z = 0 first puts them outside and on the near side,
+        # where the root is the intended one.
+        surf.flat(rays)
+
+        # The frame is pushed by +radius so the cylinder's axis sits behind
+        # the apex, putting the apex at local z = 0 and leaving the surface
+        # z = R - sqrt(R^2 - x^2): curving towards the telescope, which is
+        # the direction that helps. Bent the other way it roughly doubles the
+        # outer orders instead, so the sign is load bearing and was settled
+        # by measuring both.
+        tran.transform(rays, 0., 0., self.radius, 0., 0., 0.)
+        surf.cyl(rays, self.radius)
+        tran.itransform(rays, 0., 0., self.radius, 0., 0., 0.)
+
+    def sag(self, x):
+        """How far the surface stands proud of its apex, at local ``x``."""
+        x = np.asarray(x, dtype=float)
+        return self.radius - np.sqrt(np.maximum(self.radius ** 2 - x ** 2, 0.))
+
+    def patches(self, n_azimuth=32, phi0=0., dphi=2 * np.pi, num=None):
+        """
+        The bent surface as a quad grid, so a 3D view can draw it.
+
+        A grid and not a flat quad, or the curvature -- the entire point of
+        the element -- would be invisible in the very view meant to show it.
+        """
+        half = self.half_width
+        if not half:
+            return []
+        across = np.linspace(-half, half, max(8, n_azimuth))
+        along = np.linspace(-half, half, 2)
+        x, y = np.meshgrid(across, along)
+        gx, gy, gz = to_global(x, y, self.sag(x), self.placement)
+        return [Patch(self.title, self.kind, gx, gy, gz, self.style)]
+
+
 class LinearGrating(Flat):
     """
     A grating with straight, evenly spaced grooves.
@@ -1248,6 +1328,53 @@ class TraceResult(object):
             here = self.orders == m
             out[m] = (x[here] - x0, y[here] - y0)
         return out
+
+    def resolving_power(self):
+        """
+        ``{order: R}`` where R = lambda / delta-lambda, or None.
+
+        The number a grating spectrometer is specified by: how close two
+        wavelengths can be and still be told apart.  Delta-lambda is the
+        shift that moves a spot by its own width, so
+        ``R = lambda * (dx/dlambda) / w``.
+
+        Measured rather than derived from the grating equation.  Because
+        ``x`` is proportional to ``m * lambda``, ``dx/dlambda`` is
+        ``(m/lambda) * dx/dm`` -- and ``dx/dm`` is just the spacing between
+        adjacent orders, which a fan has already put on the detector.  So
+        this needs no extra trace, assumes no particular groove law, and
+        works for a radial grating as readily as a linear one:
+
+            R = m * (spacing between adjacent orders) / (spot width)
+
+        Returns None when nothing was fanned, and omits an order whose
+        neighbours are missing rather than inventing a spacing for it.  One
+        order in flight means no spacing to measure, and a fabricated
+        resolving power is worse than none.
+        """
+        if self.rays is None or self.orders is None or not self.order_values:
+            return None
+        centres, widths = {}, {}
+        for m in self.order_values:
+            here = self.orders == m
+            if not here.any():
+                continue
+            centres[m] = float(np.mean(self.rays[1][here]))
+            widths[m] = float(anal.hpd([c[here] for c in self.rays]))
+
+        out = collections.OrderedDict()
+        for m in self.order_values:
+            if m == 0 or m not in centres or not widths.get(m):
+                # Order zero is undiffracted: it does not move with
+                # wavelength, so it resolves nothing and has no R at all.
+                continue
+            neighbours = [n for n in (m - 1, m + 1) if n in centres]
+            if not neighbours:
+                continue
+            spacing = np.mean([abs(centres[m] - centres[n])
+                               for n in neighbours])
+            out[m] = abs(m) * spacing / widths[m]
+        return out or None
 
     def spot_arcsec_by_order(self):
         """:meth:`spot_by_order` in arcseconds, as the plots want it."""

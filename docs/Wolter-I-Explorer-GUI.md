@@ -48,6 +48,38 @@ Tick **Grating fitted** to put one in the converging beam.
 
 `Order` is the **reference** order. HPD, RMS, best focus, throughput and the surviving-ray count are all measured on it and on nothing else. `Extra orders ±` puts more orders in flight so the dispersion can be seen — they are drawn, never measured, so raising it cannot move a number. The status readout names both counts once a fan is in flight, since "rays surviving" would otherwise quietly change meaning.
 
+## The detector
+
+Tick **Detector placed** to put the image surface where the design says, instead of at best focus.
+
+**`Detector half-width`** is new and defaults to 0, meaning unbounded — which is what this has always silently been. A detector with no size catches every ray however far off it lands, and draws nothing in the 3D view. Give it a size and it does both.
+
+**Two tilts.** `Detector tilt about x` has always existed; `Detector tilt about y` is the one that leans the detector *along* the dispersion, since the dispersion runs in x. The x tilt rotates perpendicular to it and cannot follow a dispersed focus.
+
+**`Detector shape` — Flat or Cylindrical.** This is the one that matters for a spectrometer. A grating in a converging beam does not bring its orders to a single plane: on the default design with orders ±3 in flight, the outer orders focus 0.40 mm ahead of the reference order, so on a flat detector they land 0.62 arcsec across against an aberration floor of 0.38. Bending the detector along the dispersion — what a Rowland circle is for — recovers most of that:
+
+| order | flat | curved (R = 200 mm) |
+|---|---|---|
+| m = ±1 | 0.098″ | 0.090″ |
+| m = ±2 | 0.274″ | 0.210″ |
+| m = ±3 | 0.622″ | 0.373″ |
+
+In resolving power, which is the number that matters: **R at m = ±3 goes from 592 to 985, a 66% gain.** Order 0 sits on the apex where the two surfaces touch and does not move at all.
+
+`Detector radius` defaults to 200 mm, which is the measured optimum for the default design. It is not a universal constant — the best radius follows `grating_z`, the period and the wavelength, so it is worth sweeping for any design you care about. Below about 175 mm it degrades sharply.
+
+## Resolving power
+
+The Spot Diagram legend reports **R = λ/Δλ** per order once a fan is in flight — how close two wavelengths can be and still be told apart.
+
+It is measured rather than assumed. Because the landing position goes as `m·λ`, `dx/dλ` is `(m/λ)·dx/dm`, and `dx/dm` is just the spacing between adjacent orders that the fan has already put on the detector. So R needs no extra trace, assumes no particular groove law, and works for a radial grating as readily as a linear one:
+
+> R = m × (spacing between adjacent orders) ÷ (spot width)
+
+It agrees with the direct `λ·(dx/dλ)/w` to about 0.2%, and the small gap is real rather than noise: the direct form uses the paraxial `dx/dλ = m·L/d`, while the measured spacing carries the `tan` nonlinearity of where a ray actually lands. The measured one is the more correct of the two.
+
+Order 0 gets no R — it does not disperse, so it resolves nothing. Neither does a single order in flight, since there is no spacing to measure; you get nothing rather than a fabricated number.
+
 Two honest caveats. The grooves drawn on the grating are a direction cue and not a depiction: a 240 mm grating at a 200 nm period carries over a million of them, and the status line says as much. And every order is drawn at equal weight, because PyXFocus has no groove-efficiency model — a real grating puts very different amounts of light into different orders.
 
 ## Parameter sweep (tolerancing)

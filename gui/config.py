@@ -52,7 +52,7 @@ from PyXFocus.gui import wolter
 FORMAT = 'pyxfocus-wolter-config'
 
 #: The version this build writes.
-VERSION = 3
+VERSION = 4
 
 #: The oldest version this build can still read.
 OLDEST = 1
@@ -250,6 +250,25 @@ def _migrate_2_to_3(payload, problems):
     return payload
 
 
+def _migrate_3_to_4(payload, problems):
+    """
+    Version 3 predates a detector with a size, a shape or a second tilt.
+
+    Every version 3 detector was flat, unbounded and tilted only about x,
+    so defaulting the four new fields to exactly that reproduces the design
+    the file describes -- det_size in particular must stay 0, since any
+    positive value vignettes and would move the numbers.
+    """
+    params = payload.get('parameters')
+    if not isinstance(params, dict):
+        return payload
+    params.setdefault('det_shape', 0)       # flat
+    params.setdefault('det_size', 0.)       # unbounded, as it always was
+    params.setdefault('det_tilt_y', 0.)
+    params.setdefault('det_radius', 200.)
+    return payload
+
+
 #: Migration table: version N -> a function returning a payload at N+1.
 #:
 #: One entry per step, so a version 1 file still opens after five format
@@ -259,7 +278,8 @@ def _migrate_2_to_3(payload, problems):
 #: with a comment saying why -- because
 #: test_config_every_past_version_has_a_migration refuses to let the table
 #: develop gaps. The runtime is forgiving; the test suite is not.
-_MIGRATIONS = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
+_MIGRATIONS = {1: _migrate_1_to_2, 2: _migrate_2_to_3,
+               3: _migrate_3_to_4}
 
 
 def _read_version(payload, problems):

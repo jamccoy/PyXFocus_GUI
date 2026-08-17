@@ -1374,6 +1374,158 @@ def test_a_radial_grating_drops_its_evanescent_rays():
     assert len(beam) == 0, 'an evanescent ray survived into the metrics'
 
 
+def _detector_params(**kwargs):
+    from PyXFocus.gui.wolter import WolterParams
+    base = dict(num_rays=8000, seed=0, use_grating=1, grating_order=1,
+                wavelength=2., grating_period=200., grating_z=500.,
+                grating_size=30., grating_order_span=3, use_detector=1)
+    base.update(kwargs)
+    return WolterParams(**base)
+
+
+def _hpd_by_order(result):
+    import PyXFocus.analyses as anal
+    scale = 180. / np.pi * 3600. / result.focal_length
+    return dict((m, anal.hpd([c[result.orders == m] for c in result.rays])
+                 * scale) for m in result.order_values)
+
+
+def test_the_cylinder_solver_still_does_what_we_build_on():
+    """
+    A tripwire on surfaces.cyl, which the curved detector is built from.
+
+    Two properties are load bearing: the axis is along y, so the surface
+    curves in the x-z plane -- the dispersion plane -- and stays straight
+    along the grooves; and it picks the root on the side the ray *started*
+    rather than the first one along its direction. The second is why the
+    detector lands rays on a flat plane before bending them.
+    """
+    import PyXFocus.surfaces as surf
+    xs = np.array([0., 20., 50., -50.])
+    rays = [np.zeros(4), xs.copy(), np.array([1., 2., 3., 4.]),
+            np.full(4, 500.), np.zeros(4), np.zeros(4), np.full(4, -1.),
+            np.zeros(4), np.zeros(4), np.ones(4)]
+    before_y = rays[2].copy()
+    surf.cyl(rays, 200.)
+    assert np.allclose(np.hypot(rays[1], rays[3]), 200.), (
+        'rays no longer land on x^2 + z^2 = R^2')
+    assert np.array_equal(rays[2], before_y), 'y moved; the axis is not y'
+
+    # Started above, so it takes the +z root -- the direction-blind choice.
+    assert (rays[3] > 0).all(), 'cyl no longer picks the near-side root'
+
+
+def test_the_curved_detector_has_the_shape_it_claims():
+    """z = R - sqrt(R^2 - x^2) in its own frame: bent towards the telescope."""
+    from PyXFocus.gui import optics
+    radius = 200.
+    det = optics.CurvedDetector(optics.IDENTITY, half_width=30.,
+                                radius=radius)
+    xs = np.array([0., 5., 10., 15., -15.])
+    rays = [np.zeros(5), xs.copy(), np.zeros(5), np.full(5, 500.),
+            np.zeros(5), np.zeros(5), np.full(5, -1.),
+            np.zeros(5), np.zeros(5), np.ones(5)]
+    det.trace_to(rays)
+    assert np.allclose(rays[3], det.sag(xs), atol=1e-9), (
+        'traced %r, sag says %r' % (rays[3], det.sag(xs)))
+    assert (det.sag(xs) >= 0).all(), 'the surface bends away from the telescope'
+    assert det.patches(n_azimuth=12), 'a curved detector must be drawable'
+
+
+def test_a_curved_detector_sharpens_the_outer_orders():
+    """
+    The payoff, and the reason the element exists.
+
+    A grating in a converging beam does not bring its orders to one plane,
+    so a flat detector costs the outer ones. Bending it along the dispersion
+    recovers most of that -- and if this ever stops being true the element
+    is pure complexity.
+    """
+    from PyXFocus.gui.wolter import trace
+    flat = _hpd_by_order(trace(_detector_params(det_shape=0)))
+    curved = _hpd_by_order(trace(_detector_params(det_shape=1,
+                                                  det_radius=200.)))
+
+    outer = max(abs(m) for m in flat)
+    for m in (outer, -outer):
+        assert curved[m] < 0.75 * flat[m], (
+            'order %+d did not sharpen: %.4f -> %.4f' % (m, flat[m], curved[m]))
+    assert sum(curved.values()) < 0.8 * sum(flat.values()), (
+        'the fan as a whole did not improve: %.4f -> %.4f'
+        % (sum(flat.values()), sum(curved.values())))
+    # Order zero sits on the apex, where the two surfaces touch.
+    assert abs(curved[0] - flat[0]) < 1e-6, (
+        'order zero moved, but it is at the point the surfaces share')
+
+
+def test_resolving_power_matches_the_grating_equation():
+    """
+    R measured from the order spacing agrees with lambda*(dx/dlambda)/w.
+
+    The tolerance is one per cent, not a part in ten thousand, and the gap
+    is real rather than noise: the direct form uses the paraxial
+    dx/dlambda = m*L/d, while the measured spacing carries the tan()
+    nonlinearity of where a ray actually lands. The measured one is the
+    more correct of the two, and the difference grows with |m| exactly as
+    that nonlinearity does.
+    """
+    import PyXFocus.analyses as anal
+    from PyXFocus.gui.wolter import trace
+    params = _detector_params(det_shape=0)
+    result = trace(params)
+    power = result.resolving_power()
+    assert power, 'a fanned trace should report resolving power'
+
+    for m, measured in power.items():
+        width = anal.hpd([c[result.orders == m] for c in result.rays])
+        direct = params.wavelength * (abs(m) * params.grating_z
+                                      / params.grating_period) / width
+        assert abs(measured / direct - 1.) < 0.01, (
+            'order %+d: measured R %.0f against direct %.0f' % (m, measured, direct))
+
+    assert 0 not in power, (
+        'order zero does not disperse, so it resolves nothing')
+
+
+def test_resolving_power_refuses_rather_than_invents():
+    """One order in flight means no spacing to measure, so no number."""
+    from PyXFocus.gui.wolter import WolterParams, trace
+    assert trace(_detector_params(grating_order_span=0)).resolving_power() is None
+    assert trace(WolterParams(num_rays=500, seed=0)).resolving_power() is None
+
+
+def test_a_curved_detector_raises_resolving_power():
+    """The whole story in the one number a spectrometer is specified by."""
+    from PyXFocus.gui.wolter import trace
+    flat = trace(_detector_params(det_shape=0)).resolving_power()
+    curved = trace(_detector_params(det_shape=1,
+                                    det_radius=200.)).resolving_power()
+    outer = max(abs(m) for m in flat)
+    assert curved[outer] > 1.3 * flat[outer], (
+        'R at m=%+d went %.0f -> %.0f' % (outer, flat[outer], curved[outer]))
+
+
+def test_a_sized_detector_vignettes_and_draws():
+    """
+    det_size 0 means unbounded, which is what it has always been.
+
+    The detector was built with no half_width at all, so its aperture was
+    None -- it caught every ray however far off, and drew nothing in 3D
+    because Flat.patches returns [] without one.
+    """
+    from PyXFocus.gui.wolter import build_system, trace
+    unbounded = build_system(_detector_params(det_size=0.)).terminator
+    assert unbounded.aperture is None
+    assert unbounded.patches() == [], 'a sizeless detector cannot be drawn'
+
+    sized = build_system(_detector_params(det_size=8.)).terminator
+    assert sized.aperture is not None
+    assert sized.patches(), 'a sized detector must be drawable'
+    # 8 mm cannot hold a fan that spans 30 mm, so it must cut it.
+    assert (trace(_detector_params(det_size=8.)).num_surviving_all_orders
+            < trace(_detector_params(det_size=0.)).num_surviving_all_orders)
+
+
 def test_rays_missing_the_grating_are_reported():
     """A grating too small to catch the beam says so rather than crashing."""
     from PyXFocus.gui.wolter import WolterParams, trace
