@@ -11,35 +11,21 @@ never touch it.
 so the package imports cleanly without ``utilities`` installed and only the
 functions that genuinely need it raise -- with a message saying what to
 install.
+
+The implementation now comes from :mod:`endstation.optional`, shared with the
+other projects here.  This wrapper keeps PyXFocus's own three-positional
+signature -- ``(name, purpose, install)`` -- so the call sites in ``analyses``
+and ``surfaces`` read exactly as they did, and so ``test_smoke`` keeps testing
+the contract this package actually offers.
+
+``utilities`` is worth noting as the reason the shared version grew an explicit
+install command: it is installed from a git URL and is not an extra of anything,
+so a message offering ``pip install '.[something]'`` would have been wrong.
 """
 
+from endstation.optional import optional_module as _optional_module
 
-class _OptionalModule:
-    """Proxy that imports ``name`` on first attribute access."""
-
-    def __init__(self, name, purpose, install):
-        self._name = name
-        self._purpose = purpose
-        self._install = install
-        self._module = None
-
-    def __getattr__(self, attr):
-        # Guard against recursion on our own private attributes.
-        if attr.startswith('_'):
-            raise AttributeError(attr)
-
-        if self._module is None:
-            try:
-                self._module = __import__(self._name, fromlist=['__name__'])
-            except ImportError as err:
-                raise ImportError(
-                    "%s is required for %s but is not installed.\n"
-                    "Install it with: %s\n"
-                    "(The rest of PyXFocus works without it.)"
-                    % (self._name, self._purpose, self._install)
-                ) from err
-
-        return getattr(self._module, attr)
+__all__ = ['optional_module', 'UTILITIES_INSTALL']
 
 
 def optional_module(name, purpose, install):
@@ -57,10 +43,12 @@ def optional_module(name, purpose, install):
 
     Returns
     -------
-    _OptionalModule
-        Proxy forwarding attribute access to the real module.
+    proxy
+        Object forwarding attribute access to the real module, importing it
+        on the first access and raising an ``ImportError`` naming ``install``
+        if it is not there.
     """
-    return _OptionalModule(name, purpose, install)
+    return _optional_module(name, purpose=purpose, install=install)
 
 
 #: Install hint for the ``utilities`` imaging package.

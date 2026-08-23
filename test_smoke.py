@@ -684,16 +684,24 @@ def test_qt_free_modules_stay_qt_free():
     *transitive* Qt imports too -- a pure module that grows an innocent
     import of something that itself pulls in Qt would pass a source scan
     and fail here, which is the right way round.
+
+    The mechanism now lives in ``endstation.testing.boundary``, shared with the
+    other projects here -- two of which had the weaker AST version until this
+    one's argument was applied to them. The list is still explicit rather than
+    discovered: unlike those projects, "pure" here is not a subpackage but a
+    chosen set of modules inside ``gui/``, and there is no directory boundary
+    for a walk to follow.
     """
-    import subprocess
-    import sys
-    for module in ('PyXFocus.gui.wolter', 'PyXFocus.gui.config',
-                   'PyXFocus.gui.optics', 'PyXFocus.gui.scene3d',
-                   'PyXFocus.gui.docs_index'):
-        subprocess.check_call([
-            sys.executable, '-c',
-            'import sys, %s; assert "PyQt5" not in sys.modules, '
-            '"%s pulled in Qt"' % (module, module)])
+    from endstation.testing.boundary import assert_import_free
+
+    assert_import_free(
+        ('PyXFocus.gui.wolter', 'PyXFocus.gui.config',
+         'PyXFocus.gui.optics', 'PyXFocus.gui.scene3d',
+         'PyXFocus.gui.docs_index'),
+        ('PyQt5', 'PyQt6', 'PySide2', 'PySide6'),
+        reason=('The README promises a toolkit is needed only for the GUI, '
+                'and these are what that promise is about.'),
+    )
 
 
 #: What `trace` produced before the flat source->primary->secondary->focus
