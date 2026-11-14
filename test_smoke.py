@@ -1906,6 +1906,42 @@ def test_docs_render_without_raw_markdown():
     assert not bad, 'unrendered Markdown:\n  ' + '\n  '.join(bad)
 
 
+def _make_launcher():
+    """tools/make_launcher.py as a module. It imports no Qt at load."""
+    import os
+    import sys
+    tools = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools')
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import make_launcher
+    return make_launcher
+
+
+def test_launcher_pth_names_this_checkout():
+    """The .pth names the folder holding PyXFocus, and --check sees a stale one."""
+    import tempfile
+    from pathlib import Path
+    ml = _make_launcher()
+
+    folder = Path(tempfile.mkdtemp())
+    path = ml.write_pth(folder)
+    assert path.read_text(encoding='utf-8').strip() == str(ml.REPO_PARENT)
+    assert ml.check_pth(folder) == []
+
+    ml.write_pth(folder, repo_parent=folder)
+    assert ml.check_pth(folder), 'a .pth naming another checkout passed'
+    path.unlink()
+    assert ml.check_pth(folder), 'a missing .pth passed'
+
+
+def test_launcher_script_runs_the_app_module():
+    """The macOS launcher runs the given interpreter with -m PyXFocus.gui.app."""
+    ml = _make_launcher()
+    text = ml.launch_script('/venv/bin/python')
+    assert text.startswith('#!/bin/sh\n')
+    assert 'exec "/venv/bin/python" -m PyXFocus.gui.app "$@"' in text
+
+
 def test_docs_pages_and_sources_agree():
     """Every page in PAGES has a Markdown file, and vice versa."""
     import os

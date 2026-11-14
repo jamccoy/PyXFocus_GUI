@@ -11,7 +11,7 @@
 # Ignore files for ipython/jupyter notebook and jupyter lab.
 .ipynb_checkpoints/*
 # The macOS launcher is a local build artifact (tools/make_launcher.py
-# regenerates it, with this machine's interpreter path baked in).
+# regenerates it, with this machine's paths in it).
 *.app/
 # The project's virtual environment. requirements.txt is what is versioned;
 # the environment built from it is not.

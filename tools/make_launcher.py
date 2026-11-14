@@ -1,240 +1,239 @@
 #!/usr/bin/env python
-"""Build a double-clickable macOS launcher for the Wolter-I Explorer.
+"""Make the Wolter-I Explorer launchable without a terminal.
 
-    /opt/anaconda3/bin/python tools/make_launcher.py            # build it
-    /opt/anaconda3/bin/python tools/make_launcher.py --check    # verify an existing one
+    .venv/bin/python tools/make_launcher.py            # build it
+    .venv/bin/python tools/make_launcher.py --check    # verify an existing one
 
-Produces ``~/Documents/software_development/PyXFocus.app``: a minimal bundle
-whose launch script has the interpreter and repository paths baked in at
-build time.
+Run it with the Python of the project's own virtualenv (see
+requirements.txt): that interpreter is the one the launcher runs, and the
+compiled Fortran extensions are built per interpreter, so "whichever python
+is on PATH" is not a thing this application can be launched with.
 
-The bundle is a build artifact and lives *outside* the repository (`*.app/`
-is gitignored); this generator is the thing under version control, so the
-launcher can always be rebuilt -- and must be, if the repo moves or the
-interpreter changes.
+What it does:
 
-**A .app that fails silently is useless**, so the launch script logs to
-``~/Library/Logs/PyXFocus.log`` and raises a native dialog naming that log if
-the GUI exits non-zero, rather than just bouncing the Dock icon once.
+* **Every platform:** writes ``PyXFocus_GUI.pth`` into the virtualenv's
+  site-packages, naming the folder that holds this checkout. That virtualenv
+  can then ``import PyXFocus`` from any working directory, which is what
+  this project has instead of package metadata: the package is imported by
+  its folder name, and that folder's *parent* has to be on ``sys.path``.
+* **macOS:** writes ``<venv>/bin/wolter-explorer``, a two-line script that
+  runs ``python -m PyXFocus.gui.app``, and builds ``PyXFocus.app`` around it
+  with ``endstation-app``'s ``build_app``. The bundle logs to
+  ``~/Library/Logs/PyXFocus.log`` and raises a dialog naming that log if the
+  explorer exits with an error, rather than bouncing the Dock icon once.
+* **Windows:** draws the icon and writes a Desktop shortcut with
+  ``endstation-shortcut``'s functions. It runs ``pythonw.exe -m
+  PyXFocus.gui.app``, so no console window opens.
+* **Linux:** the ``.pth`` is all there is; ``python -m PyXFocus.gui.app``
+  then works from anywhere.
 
-The interpreter is baked in as an absolute path, which is the whole point:
-several Pythons on one machine is the normal case, and the compiled Fortran
-extensions are built per interpreter, so "whichever python is on PATH" is
-not a thing this application can be launched with.  Point it at the project's
-own ``.venv/bin/python`` -- see requirements.txt -- and the bundle, the tests
-and the extensions all refer to one environment.
-
-(An earlier version of this note claimed the project had no virtualenv
-"deliberately -- see the README". The README said no such thing; it said the
-opposite, that becoming pip-installable was the proper fix. The absence was
-an accident, and it cost a release where pyqtgraph was installed into a
-Python the launcher never ran.)
-
-There is still no console-script entry point, so the launcher must ``cd`` to
-the *parent* of the ``PyXFocus`` folder before running
-``python -m PyXFocus.gui.app``: the
-package is imported by that name, and the folder has to be named that too,
-so running from anywhere else reproduces the
-``ModuleNotFoundError: No module named 'PyXFocus'`` trap the README warns
-about elsewhere.
+The bundle and the shortcut are build artifacts outside the repository, with
+this machine's paths in them. Rebuild if the repository or the virtualenv
+moves; ``--check`` says when one has gone stale.
 """
-
-from __future__ import print_function
 
 import argparse
 import os
-import plistlib
-import shutil
-import stat
-import subprocess
 import sys
+import subprocess
+import sysconfig
+from pathlib import Path
 
-#: This file lives in <PyXFocus>/tools/. REPO_PARENT is where `python -m
-#: PyXFocus.gui.app` must be run from -- the parent of the PyXFocus folder,
-#: not the folder itself.
-PYXFOCUS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO_PARENT = os.path.dirname(PYXFOCUS_DIR)
+#: This file lives in <PyXFocus>/tools/. REPO_PARENT is what has to be on
+#: sys.path: the parent of the PyXFocus folder, not the folder itself.
+PYXFOCUS_DIR = Path(__file__).resolve().parent.parent
+REPO_PARENT = PYXFOCUS_DIR.parent
 
-DEFAULT_APP = os.path.expanduser(
-    '~/Documents/software_development/PyXFocus.app')
-DEFAULT_PYTHON = '/opt/anaconda3/bin/python'
 DISPLAY_NAME = 'Wolter-I Explorer'
+#: The bundle's executable and icon name, and so the log's: PyXFocus.log.
+STEM = 'PyXFocus'
 BUNDLE_ID = 'com.pyxfocus.WolterExplorer'
-EXECUTABLE_NAME = 'PyXFocus'
+MODULE = 'PyXFocus.gui.app'
+ICON_MODULE = 'PyXFocus.gui.icon'
+PTH_NAME = 'PyXFocus_GUI.pth'
+SCRIPT_NAME = 'wolter-explorer'
+DEFAULT_APP_DIR = Path('~/Documents/software_development').expanduser()
 
-LAUNCH_SCRIPT = '''#!/bin/bash
-# Generated by tools/make_launcher.py -- edit that, not this.
-REPO_PARENT="{repo_parent}"
-PY="{python}"
-LOG="$HOME/Library/Logs/PyXFocus.log"
-mkdir -p "$(dirname "$LOG")"
-
-fail() {{
-    /usr/bin/osascript -e "display alert \\"Wolter-I Explorer could not start\\" \\
-        message \\"$1
-
-Log: $LOG\\" as critical" >/dev/null 2>&1
-    exit 1
-}}
-
-[ -x "$PY" ] || fail "No interpreter at $PY.
-Rebuild the launcher with a working one:
-    /opt/anaconda3/bin/python tools/make_launcher.py --python /path/to/python"
-
-[ -d "$REPO_PARENT/PyXFocus" ] || fail "No PyXFocus folder at $REPO_PARENT.
-Re-run tools/make_launcher.py, or the repository moved."
-
-cd "$REPO_PARENT" || fail "Could not switch to $REPO_PARENT."
-echo "--- $(date) ---" >> "$LOG"
-
-"$PY" -m PyXFocus.gui.app >> "$LOG" 2>&1 || fail \\
-    "The explorer exited with an error. This often means the Fortran
-extensions were built for a different interpreter -- rebuild them with:
-    $PY build_extensions.py"
+LAUNCH_SCRIPT = '''#!/bin/sh
+# Written by PyXFocus tools/make_launcher.py -- edit that, not this.
+exec "{python}" -m {module} "$@"
 '''
 
 
-def _run(cmd):
-    return subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+# --------------------------------------------------------------------------
+# The parts every platform shares
+# --------------------------------------------------------------------------
+
+def in_virtualenv():
+    """True when this interpreter is a virtualenv's, not a system Python."""
+    return sys.prefix != getattr(sys, 'base_prefix', sys.prefix)
 
 
-def _verify_interpreter(python_path):
-    """Fail the build, not a later double-click, if $PY can't run the app."""
-    if not os.path.isfile(python_path) or not os.access(python_path, os.X_OK):
-        print('error: %s is not an executable file' % python_path,
-              file=sys.stderr)
-        return False
-    probe = ('import sys; sys.path.insert(0, %r); '
-            'import PySide6.QtWidgets, PyXFocus.gui.app' % REPO_PARENT)
-    try:
-        _run([python_path, '-c', probe])
-    except subprocess.CalledProcessError as err:
-        print('error: %s cannot import the app:\n%s'
-              % (python_path, err.output.decode('utf-8', 'replace')),
-              file=sys.stderr)
-        return False
-    return True
+def site_packages():
+    """Where this interpreter looks for ``.pth`` files."""
+    return Path(sysconfig.get_path('purelib'))
 
 
-def build(app_path, python_path):
-    if os.path.isdir(app_path):
-        shutil.rmtree(app_path)
-    macos_dir = os.path.join(app_path, 'Contents', 'MacOS')
-    resources_dir = os.path.join(app_path, 'Contents', 'Resources')
-    os.makedirs(macos_dir)
-    os.makedirs(resources_dir)
+def write_pth(directory, repo_parent=REPO_PARENT):
+    """Write the ``.pth`` naming ``repo_parent`` into ``directory``."""
+    path = Path(directory) / PTH_NAME
+    path.write_text(str(repo_parent) + '\n', encoding='utf-8')
+    return path
 
-    launcher_path = os.path.join(macos_dir, EXECUTABLE_NAME)
-    with open(launcher_path, 'w') as handle:
-        handle.write(LAUNCH_SCRIPT.format(repo_parent=REPO_PARENT,
-                                          python=python_path))
-    mode = os.stat(launcher_path).st_mode
-    os.chmod(launcher_path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    icns_src = os.path.join(PYXFOCUS_DIR, 'resources', 'PyXFocus.icns')
-    has_icon = os.path.isfile(icns_src)
-    if has_icon:
-        shutil.copy(icns_src, os.path.join(resources_dir, 'PyXFocus.icns'))
-    else:
+def check_pth(directory, repo_parent=REPO_PARENT):
+    """Problems with the ``.pth`` in ``directory``; empty when it is right."""
+    path = Path(directory) / PTH_NAME
+    if not path.is_file():
+        return ['%s is missing from %s' % (PTH_NAME, directory)]
+    named = path.read_text(encoding='utf-8').strip()
+    if Path(named) != Path(repo_parent):
+        return ['%s names %s, but this checkout is in %s'
+                % (PTH_NAME, named, repo_parent)]
+    return []
+
+
+def can_run_app(python):
+    """
+    Whether ``python`` imports the app from a neutral folder, and why not.
+
+    Run from the filesystem root, so it is the ``.pth`` that finds PyXFocus
+    and not a working directory that happens to be the right one.
+    """
+    probe = subprocess.run(
+        [str(python), '-c', 'import PySide6.QtWidgets, %s' % MODULE],
+        cwd=os.path.abspath(os.sep), capture_output=True, text=True,
+        check=False)
+    return probe.returncode == 0, probe.stderr.strip()
+
+
+def launch_script(python, module=MODULE):
+    """The macOS launcher script's text."""
+    return LAUNCH_SCRIPT.format(python=python, module=module)
+
+
+# --------------------------------------------------------------------------
+# Per platform
+# --------------------------------------------------------------------------
+
+def build_mac(dest):
+    from endstation.tools.make_app import App, build_app
+
+    script = Path(sys.executable).parent / SCRIPT_NAME
+    script.write_text(launch_script(sys.executable), encoding='utf-8')
+    script.chmod(0o755)
+    icon = PYXFOCUS_DIR / 'resources' / 'PyXFocus.icns'
+    app = App(name=DISPLAY_NAME, launcher=script, bundle_id=BUNDLE_ID,
+              stem=STEM, icon=icon if icon.is_file() else None,
+              version='0.1.0')
+    if app.icon is None:
         print('  no resources/PyXFocus.icns -- run tools/make_icon.py first '
               'for an icon')
-
-    info = {
-        'CFBundleName': DISPLAY_NAME,
-        'CFBundleDisplayName': DISPLAY_NAME,
-        'CFBundleIdentifier': BUNDLE_ID,
-        'CFBundleVersion': '0.1.0',
-        'CFBundleShortVersionString': '0.1.0',
-        'CFBundleExecutable': EXECUTABLE_NAME,
-        'CFBundlePackageType': 'APPL',
-        'LSMinimumSystemVersion': '10.13',
-        'NSHighResolutionCapable': True,
-    }
-    if has_icon:
-        info['CFBundleIconFile'] = 'PyXFocus'
-    with open(os.path.join(app_path, 'Contents', 'Info.plist'), 'wb') as handle:
-        plistlib.dump(info, handle)
-
-    print('built %s' % app_path)
-    print('  interpreter: %s' % python_path)
-    print('  runs from:   %s' % REPO_PARENT)
-    print('  icon:        %s' % ('yes' if has_icon else 'no'))
-    print('  double-click it in Finder; logs go to ~/Library/Logs/PyXFocus.log')
+    bundle = build_app(app, dest)
+    print('built %s' % bundle)
+    print('  runs:  %s' % script)
+    print('  logs:  ~/Library/Logs/%s.log' % STEM)
+    return bundle
 
 
-def check(app_path):
-    """Verify the bundle's structure and that it still points somewhere real."""
-    problems = []
-    if not os.path.isdir(app_path):
-        print('%s does not exist -- run without --check to build it' % app_path)
-        return 1
+def check_mac(bundle):
+    from endstation.tools.make_app import check_app
 
-    launcher_path = os.path.join(app_path, 'Contents', 'MacOS', EXECUTABLE_NAME)
-    if not os.path.isfile(launcher_path):
-        problems.append('launch script missing')
-    elif not (os.stat(launcher_path).st_mode & stat.S_IXUSR):
-        problems.append('launch script is not executable')
-    else:
-        text = open(launcher_path).read()
-        try:
-            repo_parent = text.split('REPO_PARENT="', 1)[1].split('"', 1)[0]
-            python_path = text.split('PY="', 1)[1].split('"', 1)[0]
-        except IndexError:
-            problems.append('launch script does not look like ours -- rebuild it')
-            repo_parent = python_path = None
-
-        if repo_parent is not None:
-            if not os.path.isdir(os.path.join(repo_parent, 'PyXFocus')):
-                problems.append('points at %r, which has no PyXFocus folder'
-                                % repo_parent)
-            elif repo_parent != REPO_PARENT:
-                problems.append('points at %r, but this repository is at %r'
-                                % (repo_parent, REPO_PARENT))
-            if python_path and not _verify_interpreter(python_path):
-                problems.append('the baked-in interpreter %r can no longer '
-                                'import the app' % python_path)
-            # The bug this check exists to catch: a stale bundle whose
-            # launcher predates a change to how the app is invoked.
-            if 'PyXFocus.gui.app' not in text:
-                problems.append('does not launch PyXFocus.gui.app -- rebuild it')
-
-    plist_path = os.path.join(app_path, 'Contents', 'Info.plist')
-    if not os.path.isfile(plist_path):
-        problems.append('Info.plist missing')
-
-    for problem in problems:
-        print('  PROBLEM: %s' % problem)
-    if not problems:
-        print('%s: ok' % app_path)
-    return 1 if problems else 0
+    problems = check_app(bundle)
+    script = Path(sys.executable).parent / SCRIPT_NAME
+    if script.is_file() and script.read_text(encoding='utf-8') != \
+            launch_script(sys.executable):
+        problems.append('%s does not run this interpreter -- rebuild it'
+                        % script)
+    return problems
 
 
-def main():
+def build_windows(dest):
+    from endstation.tools.make_shortcut import (Shortcut, build_ico,
+                                                special_folder, write_shortcut)
+
+    pythonw = Path(sys.executable).with_name('pythonw.exe')
+    # Beside the virtualenv, as endstation-shortcut puts it.
+    icon = build_ico(ICON_MODULE,
+                     Path(sys.prefix).parent / ('%s.ico' % DISPLAY_NAME))
+    shortcut = Shortcut(name=DISPLAY_NAME, python=pythonw, module=MODULE,
+                        icon=icon, description='PyXFocus ' + DISPLAY_NAME)
+    lnk = write_shortcut(shortcut, dest or special_folder('desktop'))
+    print('wrote %s' % lnk)
+    print('  runs: %s %s' % (pythonw, shortcut.arguments))
+    return lnk
+
+
+def check_windows(lnk):
+    from endstation.tools.make_shortcut import check_shortcut
+    return check_shortcut(lnk)
+
+
+# --------------------------------------------------------------------------
+# The command
+# --------------------------------------------------------------------------
+
+def _where(args):
+    """The bundle or shortcut this run builds or checks."""
+    if sys.platform == 'darwin':
+        return (args.dest or DEFAULT_APP_DIR) / ('%s.app' % STEM)
+    if sys.platform == 'win32':
+        from endstation.tools.make_shortcut import special_folder
+        folder = args.dest or special_folder('desktop')
+        return folder / ('%s.lnk' % DISPLAY_NAME)
+    return None
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--app', default=DEFAULT_APP)
-    parser.add_argument('--python', default=DEFAULT_PYTHON,
-                        help='interpreter with PySide6 and the built '
-                             'extensions (default: %s)' % DEFAULT_PYTHON)
-    parser.add_argument('--check', action='store_true')
-    args = parser.parse_args()
+    parser.add_argument('--dest', type=Path, default=None,
+                        help='folder for the .app (default: %s) or the '
+                             'shortcut (default: the Desktop)' % DEFAULT_APP_DIR)
+    parser.add_argument('--check', action='store_true',
+                        help='verify an existing launcher instead of building')
+    args = parser.parse_args(argv)
 
-    if sys.platform != 'darwin':
-        print('This builds a macOS .app bundle; on other platforms run '
-              '`python -m PyXFocus.gui.app` directly.')
+    if not in_virtualenv():
+        print('error: run this with the project\'s virtualenv Python, e.g.\n'
+              '    .venv/bin/python tools/make_launcher.py\n'
+              'It writes a .pth file into that environment, and will not '
+              'write one into %s.' % sys.prefix, file=sys.stderr)
         return 1
 
+    where = _where(args)
     if args.check:
-        return check(args.app)
+        problems = check_pth(site_packages())
+        if sys.platform == 'darwin':
+            problems += check_mac(where)
+        elif sys.platform == 'win32':
+            problems += check_windows(where)
+        for problem in problems:
+            print('  PROBLEM: %s' % problem)
+        if not problems:
+            print('%s: ok' % (where or site_packages() / PTH_NAME))
+        return 1 if problems else 0
 
-    if not _verify_interpreter(args.python):
-        print('\nRefusing to build a launcher pointing at an interpreter '
-              'that cannot run the app.', file=sys.stderr)
+    pth = write_pth(site_packages())
+    print('wrote %s' % pth)
+    ok, why = can_run_app(sys.executable)
+    if not ok:
+        print('\nerror: %s still cannot import the app:\n%s\n\n'
+              'Refusing to build a launcher for it. The usual cause is '
+              'extensions built for another interpreter:\n'
+              '    %s build_extensions.py'
+              % (sys.executable, why, sys.executable), file=sys.stderr)
         return 1
 
-    build(args.app, args.python)
-    return check(args.app)
+    if sys.platform == 'darwin':
+        build_mac(where.parent)
+    elif sys.platform == 'win32':
+        build_windows(where.parent)
+    else:
+        print('`python -m %s` now works from any folder in this virtualenv.'
+              % MODULE)
+    return 0
 
 
 if __name__ == '__main__':

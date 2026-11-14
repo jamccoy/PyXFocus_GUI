@@ -21,7 +21,7 @@
 | `test_smoke.py` | Import and physics checks (no Qt) |
 | `test_gui_smoke.py` | Settings persistence and window restore (needs PySide6) |
 | `tools/make_icon.py` | Builds `resources/PyXFocus.icns` |
-| `tools/make_launcher.py` | Builds the double-clickable macOS `.app` |
+| `tools/make_launcher.py` | Makes the app launchable: a macOS `.app` or a Windows shortcut |
 
 `surfaces.py`, `transformations.py`, `analyses.py`, `conicsolve.py`, and `lenses.py` are the original PyXFocus engine (Ryan Allured et al.) and currently have no module-level docstrings of their own — their behavior is documented by the ray-array convention in **[Scripting and Ray Conventions](Scripting-and-Ray-Conventions.md)** and by their call sites.
 

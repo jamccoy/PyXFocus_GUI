@@ -122,24 +122,27 @@ misaligning a Wolter-I grazing-incidence telescope:
 python -m PyXFocus.gui.app
 ```
 
-### A double-clickable app (macOS)
+### A double-clickable app (macOS and Windows)
 
-To launch it from Finder or the Dock instead of a terminal, build a launcher
-once:
+To launch it from Finder, the Dock or the Desktop instead of a terminal,
+build a launcher once, with the project's own virtualenv Python:
 
 ```bash
-python tools/make_icon.py       # only needed again if the artwork changes
-python tools/make_launcher.py
+.venv/bin/python tools/make_icon.py       # macOS, only when the artwork changes
+.venv/bin/python tools/make_launcher.py
 ```
 
-This creates `~/Documents/software_development/PyXFocus.app` — a small
-bundle whose launch script has this machine's interpreter path and this
-repository's location baked in. It is a local build artifact, not something
-that can be committed or shared: rebuild it if the repository moves or you
-switch interpreters, and `python tools/make_launcher.py --check` will tell
-you if it has gone stale. If it fails to start, the failure shows up as a
-dialog rather than a bounced Dock icon, and the details land in
-`~/Library/Logs/PyXFocus.log`.
+It first writes a `.pth` file into the virtualenv, so that environment can
+`import PyXFocus` from any folder. Then, on macOS, it builds
+`~/Documents/software_development/PyXFocus.app` with endstation's
+`endstation-app`; on Windows it writes a Desktop shortcut with
+`endstation-shortcut`; on Linux the `.pth` is all it does, and
+`python -m PyXFocus.gui.app` then works from anywhere. Either launcher is a
+local build artifact with this machine's paths in it: rebuild it if the
+repository or the virtualenv moves, and `tools/make_launcher.py --check`
+will tell you if it has gone stale. If the macOS app fails to start, the
+failure shows up as a dialog rather than a bounced Dock icon, and the
+details land in `~/Library/Logs/PyXFocus.log`.
 
 Set the shell radius, focal length, mirror lengths, shell count, source
 off-axis angle and secondary misalignment in the left-hand panel. The
@@ -451,7 +454,7 @@ deliberate step.
 | `docs/` | The documentation itself, in Markdown — the source of truth |
 | `tools/publish_wiki.py` | Copies `docs/*.md` into a GitHub wiki checkout |
 | `tools/make_icon.py` | Builds `resources/PyXFocus.icns` |
-| `tools/make_launcher.py` | Builds the double-clickable macOS `.app` |
+| `tools/make_launcher.py` | Makes the app launchable: a macOS `.app` or a Windows shortcut |
 
 ### Adding an optic
 

@@ -85,17 +85,19 @@ pip install git+https://github.com/rallured/utilities.git
 
 It is imported lazily, so **everything else works without it**. If you call a function that needs it, you get an `ImportError` naming the package and the install command.
 
-## A double-clickable app (macOS)
+## A double-clickable app (macOS and Windows)
 
-To launch the GUI from Finder or the Dock instead of a terminal, build a launcher once:
+To launch the GUI from Finder, the Dock or the Desktop instead of a terminal, build a launcher once, with the project's own virtualenv Python:
 
 ```bash
-python tools/make_icon.py       # only needed again if the artwork changes
-python tools/make_launcher.py
+.venv/bin/python tools/make_icon.py       # macOS, only when the artwork changes
+.venv/bin/python tools/make_launcher.py
 ```
 
-This creates a small `.app` bundle whose launch script has this machine's interpreter path and this repository's location baked in. It is a **local build artifact**, not something that can be committed or shared: rebuild it if the repository moves or you switch interpreters, and `python tools/make_launcher.py --check` will tell you if it has gone stale.
+It writes a `.pth` file into the virtualenv, so that environment can `import PyXFocus` from any folder. On macOS it then builds a small `.app` bundle with endstation's `endstation-app`, and on Windows a Desktop shortcut with `endstation-shortcut`. On Linux the `.pth` is all it does, and `python -m PyXFocus.gui.app` works from anywhere afterwards.
 
-If it fails to start, the failure shows up as a dialog rather than a bounced Dock icon, and the details land in `~/Library/Logs/PyXFocus.log`.
+Either launcher is a **local build artifact**, not something that can be committed or shared: rebuild it if the repository or the virtualenv moves, and `tools/make_launcher.py --check` will tell you if it has gone stale.
+
+If the macOS app fails to start, the failure shows up as a dialog rather than a bounced Dock icon, and the details land in `~/Library/Logs/PyXFocus.log`.
 
 Next: **[Wolter-I Explorer GUI](Wolter-I-Explorer-GUI.md)** or **[Scripting and Ray Conventions](Scripting-and-Ray-Conventions.md)**.
