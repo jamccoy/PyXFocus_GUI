@@ -107,9 +107,13 @@ Making it a genuine effective area needs a coating reflectivity table indexed by
 
 **Show script** prints the plain PyXFocus script equivalent to the current settings, so the GUI can be used to find a configuration and then hand it back to you as code.
 
+## Theme
+
+**View → Theme** offers System, which follows the operating system's light or dark setting as it changes, and five fixed themes. The plots follow it, except the 3D layout, which stays light in every theme so that the black primary mirrors show.
+
 ## What it remembers
 
-The explorer reopens where you left it: window size and position, the splitter, the active tab, the auto-trace setting, and the parameters you were working on. Nothing else is stored, and nothing leaves your machine.
+The explorer reopens where you left it: window size and position, the splitter, the active tab, the auto-trace setting, the theme, the folder you last saved a sweep to, and the parameters you were working on. Nothing else is stored, and nothing leaves your machine.
 
 Settings live in the platform's usual place — on macOS, `~/Library/Preferences/com.pyxfocus.WolterExplorer.plist`. To start from a clean slate:
 

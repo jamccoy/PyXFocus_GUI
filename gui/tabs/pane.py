@@ -20,12 +20,36 @@ The gate itself is :class:`PaintGate` and knows nothing about matplotlib;
 because the 3D tab renders with OpenGL and has no canvas to speak of, and
 duplicating a dirty flag is exactly how two tabs drift into disagreeing
 about when a repaint is owed.
+
+:class:`FigurePane` also follows the theme chosen under View > Theme. It
+draws under that theme's matplotlib settings and restyles its figure
+afterwards, because the settings govern only what is created after them
+and ``ax.clear()`` keeps the colours an axes was born with.
 """
 
+import matplotlib
+from endstation.qt import theming
+from endstation.theme import pane as pane_color
+from endstation.theme import rc_params
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.figure import Figure
 from PySide6 import QtWidgets
+
+
+def style_figure(figure, theme):
+    """Restyle an existing figure and every axes on it, 2D or 3D."""
+    figure.set_facecolor(theme.figure)
+    for axes in figure.axes:
+        axes.set_facecolor(theme.axes)
+        axes.tick_params(colors=theme.ink, labelcolor=theme.ink, which='both')
+        for spine in getattr(axes, 'spines', {}).values():
+            spine.set_edgecolor(theme.ink)
+        zaxis = getattr(axes, 'zaxis', None)
+        if zaxis is not None:
+            for axis in (axes.xaxis, axes.yaxis, zaxis):
+                axis.set_pane_color(pane_color(theme))
+                axis.line.set_color(theme.ink)
 
 
 class PaintGate(object):
@@ -125,16 +149,40 @@ class PaintGate(object):
 
 
 class FigurePane(PaintGate, QtWidgets.QWidget):
-    """A toolbar, a canvas, and a dirty flag."""
+    """A toolbar, a canvas, a dirty flag, and the theme."""
+
+    #: The theme this pane always draws in, or None to follow the one
+    #: chosen under View > Theme.
+    THEME = None
 
     def __init__(self, parent=None):
         super(FigurePane, self).__init__(parent)
-        self.figure = Figure(figsize=(5, 4), tight_layout=True)
+        with matplotlib.rc_context(rc_params(self.theme())):
+            self.figure = Figure(figsize=(5, 4), tight_layout=True)
         self.canvas = FigureCanvasQTAgg(self.figure)
         box = QtWidgets.QVBoxLayout(self)
         box.addWidget(NavigationToolbar2QT(self.canvas, self))
         box.addWidget(self.canvas, 1)
         self._init_paint_gate()
+        theming.subscribe(self._on_theme)
+
+    def theme(self):
+        """The theme this pane draws in now."""
+        return self.THEME or theming.current()
+
+    def flush(self):
+        # Drawn under the theme's settings, so labels, legends and new
+        # ticks take its colours, then restyled, for what clear() kept.
+        theme = self.theme()
+        with matplotlib.rc_context(rc_params(theme)):
+            super(FigurePane, self).flush()
+        style_figure(self.figure, theme)
+
+    def _on_theme(self, _theme):
+        """Repaint in the new theme: now if on screen, else when shown."""
+        self._painted = None
+        if self.isVisible():
+            self.flush()
 
     def _present(self):
         self.canvas.draw_idle()

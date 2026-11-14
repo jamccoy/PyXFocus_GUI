@@ -67,7 +67,9 @@ CAMERA_PRESETS = collections.OrderedDict([
 ])
 
 #: Very slightly off white, so that a white grating or detector edge still
-#: has something to be seen against.
+#: has something to be seen against. It stays light whatever View > Theme
+#: says, and so does the matplotlib 3D tab, for the reason given where it
+#: is set below.
 BACKGROUND = '#f4f4f4'
 
 #: A narrow field of view, because this is a measuring instrument and not a

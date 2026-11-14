@@ -31,6 +31,7 @@ decentre all live in that plane and are the whole reason for this view.
 """
 
 import numpy as np
+from endstation.theme import LIGHT
 from mpl_toolkits.mplot3d import Axes3D             # noqa: F401  (projection)
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from PySide6 import QtWidgets
@@ -47,6 +48,10 @@ RAYS_GID = 'rays'
 
 class Layout3DTab(FigurePane):
     """A rotatable view of the optics and the rays through them."""
+
+    #: Always light, like the OpenGL view beside it: optics.STYLES draws
+    #: the primary mirrors in black for both renderers.
+    THEME = LIGHT
 
     #: Which scene budget and shell treatment this tab asks for.
     backend = 'matplotlib'

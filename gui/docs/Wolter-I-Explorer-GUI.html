@@ -1,4 +1,4 @@
-<!-- pyxfocus-docs v1 sha256:608df76387298e3101b7c267d0c35b236825d477668842cc78bbd84089cdd457 -->
+<!-- pyxfocus-docs v1 sha256:601f243de39e87d784b8362e905763d1b75b5ca218df83e87be77c1cae72e8a1 -->
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -109,8 +109,10 @@ result.to_csv('tolerance_dy.csv')</pre>
 <p>The reported collecting area is the <strong>geometric</strong> entrance aperture times the vignetting fraction. It contains no mirror reflectivity, because PyXFocus ships no reflectivity model — so it is an upper bound, not a true effective area. A real Wolter-I loses roughly 10–20% per bounce with a good coating, twice over, and considerably more as photon energy rises.</p>
 <p>Making it a genuine effective area needs a coating reflectivity table indexed by graze angle and photon energy; <code>analyses.grazeAngle</code> already provides the per-ray graze angles to feed it.</p>
 <p><strong>Show script</strong> prints the plain PyXFocus script equivalent to the current settings, so the GUI can be used to find a configuration and then hand it back to you as code.</p>
+<a name="theme"></a><h2 id="theme">Theme</h2>
+<p><strong>View → Theme</strong> offers System, which follows the operating system's light or dark setting as it changes, and five fixed themes. The plots follow it, except the 3D layout, which stays light in every theme so that the black primary mirrors show.</p>
 <a name="what-it-remembers"></a><h2 id="what-it-remembers">What it remembers</h2>
-<p>The explorer reopens where you left it: window size and position, the splitter, the active tab, the auto-trace setting, and the parameters you were working on. Nothing else is stored, and nothing leaves your machine.</p>
+<p>The explorer reopens where you left it: window size and position, the splitter, the active tab, the auto-trace setting, the theme, the folder you last saved a sweep to, and the parameters you were working on. Nothing else is stored, and nothing leaves your machine.</p>
 <p>Settings live in the platform's usual place — on macOS, <code>~/Library/Preferences/com.pyxfocus.WolterExplorer.plist</code>. To start from a clean slate:</p>
 <pre>python -m PyXFocus.gui.app --reset-settings</pre>
 <p>Use the flag rather than deleting the file by hand: on macOS the preferences daemon caches it in memory and rewrites it from that cache, so removing the file appears to work and then the old settings come back.</p>

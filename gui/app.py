@@ -18,7 +18,10 @@ import sys
 import traceback
 
 import numpy as np
+from endstation.qt import theming
+from endstation.qt.help_menu import install_help_menu
 from endstation.qt.jobs import JobRunner
+from endstation.qt.sizing import fit_width_to_contents
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from PyXFocus.gui import docs_index
@@ -223,11 +226,16 @@ class MetricsBar(QtWidgets.QWidget):
          'throughput and collecting area lower bounds rather than values.'),
     ]
 
-    #: Captions greyed by default; recoloured when the metrics are bounds.
-    GREY = 'color: gray; font-size: 10px;'
-    AMBER = 'color: #b8860b; font-size: 10px; font-weight: bold;'
-    VALUE = 'font-size: 15px; font-weight: bold;'
-    VALUE_BAD = 'font-size: 15px; font-weight: bold; color: #c0392b;'
+    #: Each label's look, by meaning: a caption, a caption warning that its
+    #: value is a bound, a value, and a value that is bad news. The colours
+    #: come from the theme, and are set explicitly because a label with a
+    #: style sheet keeps the palette it was styled under.
+    STYLES = {
+        'caption': ('muted', 'font-size: 10px;'),
+        'bound': ('warn', 'font-size: 10px; font-weight: bold;'),
+        'value': ('text', 'font-size: 15px; font-weight: bold;'),
+        'bad': ('bad', 'font-size: 15px; font-weight: bold;'),
+    }
 
     def __init__(self, parent=None):
         super(MetricsBar, self).__init__(parent)
@@ -238,9 +246,9 @@ class MetricsBar(QtWidgets.QWidget):
         for key, label, tip in self.FIELDS:
             box = QtWidgets.QVBoxLayout()
             caption = QtWidgets.QLabel(label)
-            caption.setStyleSheet(self.GREY)
+            self._style(caption, 'caption')
             value = QtWidgets.QLabel('—')
-            value.setStyleSheet(self.VALUE)
+            self._style(value, 'value')
             caption.setToolTip(tip)
             value.setToolTip(tip)
             box.addWidget(caption)
@@ -250,6 +258,21 @@ class MetricsBar(QtWidgets.QWidget):
             self._captions[key] = label
             self._captions[key + '_widget'] = caption
         layout.addStretch(1)
+        theming.subscribe(self._on_theme)
+
+    def _style(self, label, kind):
+        """Give ``label`` the look named ``kind`` in :attr:`STYLES`."""
+        role, rest = self.STYLES[kind]
+        label.setProperty('metric_style', kind)
+        label.setStyleSheet('color: %s; %s'
+                            % (getattr(theming.current(), role), rest))
+
+    def _on_theme(self, _theme):
+        """Restyle every label in its own look, in the new colours."""
+        for label in self.findChildren(QtWidgets.QLabel):
+            kind = label.property('metric_style')
+            if kind:
+                self._style(label, kind)
 
     def update_metrics(self, result):
         v = self._values
@@ -278,21 +301,21 @@ class MetricsBar(QtWidgets.QWidget):
             v['nonconv'].setText('%d (%.1f%%)'
                                  % (lost, 100. * lost
                                     / max(result.num_launched, 1)))
-            v['nonconv'].setStyleSheet(self.VALUE_BAD)
+            self._style(v['nonconv'], 'bad')
         else:
             v['nonconv'].setText('0')
-            v['nonconv'].setStyleSheet(self.VALUE)
+            self._style(v['nonconv'], 'value')
 
         for key in ('throughput', 'area'):
-            self._captions[key + '_widget'].setStyleSheet(
-                self.AMBER if bounds else self.GREY)
+            self._style(self._captions[key + '_widget'],
+                        'bound' if bounds else 'caption')
 
     def clear(self):
         for key, value in self._values.items():
             value.setText('—')
-            value.setStyleSheet(self.VALUE)
+            self._style(value, 'value')
         for key in ('throughput', 'area'):
-            self._captions[key + '_widget'].setStyleSheet(self.GREY)
+            self._style(self._captions[key + '_widget'], 'caption')
 
 
 # The equivalent-script text is generated from the system itself, in
@@ -326,7 +349,9 @@ class MainWindow(QtWidgets.QMainWindow):
         scroll.setWidget(self.panel)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        scroll.setMinimumWidth(300)
+        # As wide as the fields need and no wider. A fixed floor narrower
+        # than the panel draws a horizontal scrollbar and clips a field.
+        fit_width_to_contents(scroll)
 
         self.trace_button = QtWidgets.QPushButton('Trace')
         self.trace_button.setDefault(True)
@@ -523,7 +548,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_menus(self):
         """
-        The menu bar. Help only, for now.
+        The menu bar: View for the theme, and Help.
 
         The trace controls stay the QPushButtons they have always been; this
         adds a home for the things that have nowhere else to live, not a
@@ -534,29 +559,28 @@ class MainWindow(QtWidgets.QMainWindow):
         WINDOW_STATE_VERSION is deliberately not bumped: saveState() covers
         toolbars and docks, and a menu bar is neither, so no saved blob is
         invalidated by this.
+
+        Both menus are held on the window. Under PySide6 a QMenu reached back
+        through ``menuBar().actions()[i].menu()`` is not reliably usable.
         """
-        help_menu = self.menuBar().addMenu('&Help')
+        self.view_menu = self.menuBar().addMenu('&View')
+        # Lists endstation's themes and does nothing when chosen until main()
+        # has installed the theme manager, which a test window never has.
+        self.theme_menu = theming.ThemeMenu(self)
+        self.view_menu.addMenu(self.theme_menu)
 
-        docs_action = QtGui.QAction('Documentation', self)
-        docs_action.setShortcut(QtGui.QKeySequence.HelpContents)
-        docs_action.triggered.connect(self.show_docs)
-        help_menu.addAction(docs_action)
-
-        wiki_action = QtGui.QAction('View Wiki Online', self)
-        wiki_action.setToolTip(docs_index.WIKI_URL)
-        wiki_action.triggered.connect(self.open_wiki)
-        help_menu.addAction(wiki_action)
-
-        help_menu.addSeparator()
-
-        about_action = QtGui.QAction('About Wolter-I Explorer', self)
-        # Qt spots an action whose text starts with "About" and relocates it
-        # into the macOS application menu. That is the right home for it, so
-        # this is left alone deliberately rather than pinned with NoRole --
-        # but it does mean it will not appear under Help on a Mac.
-        about_action.setMenuRole(QtGui.QAction.AboutRole)
-        about_action.triggered.connect(self.show_about)
-        help_menu.addAction(about_action)
+        # About first, then the pages, the layout every endstation app shares.
+        # Qt still moves "About ..." into the application menu on a Mac.
+        self.help_menu = install_help_menu(
+            self, about_title='About Wolter-I Explorer',
+            about_text=self.about_text,
+            pages=[[('Documentation', self.show_docs),
+                    ('View Wiki Online', self.open_wiki)]])
+        for action in self.help_menu.actions():
+            if action.text() == 'Documentation':
+                action.setShortcut(QtGui.QKeySequence.HelpContents)
+            elif action.text() == 'View Wiki Online':
+                action.setToolTip(docs_index.WIKI_URL)
 
     def show_docs(self):
         """Open (or re-raise) the bundled documentation."""
@@ -583,9 +607,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def open_wiki(self):
         QtGui.QDesktopServices.openUrl(QtCore.QUrl(docs_index.WIKI_URL))
 
-    def show_about(self):
-        QtWidgets.QMessageBox.about(
-            self, 'About Wolter-I Explorer',
+    @staticmethod
+    def about_text():
+        """The About box's body. Help > About shows it."""
+        return (
             '<b>PyXFocus — Wolter-I Explorer</b>'
             '<p>A PySide6 front end for PyXFocus, the raytracing package for '
             'X-ray telescope design.</p>'
@@ -623,6 +648,9 @@ def main():
     argv, wants_reset = settings.take_reset_flag(sys.argv)
     app = QtWidgets.QApplication(argv)
     settings.apply_identity()
+    # After the identity, so the chosen theme is read from this app's
+    # store. Before any window, so every figure is built in its colours.
+    theming.install(app)
 
     store = settings.AppSettings()
     if wants_reset:

@@ -39,10 +39,21 @@ os.environ['PYXFOCUS_3D_BACKEND'] = 'matplotlib'
 
 from PySide6 import QtCore, QtWidgets
 
+import matplotlib.colors
+
 from PyXFocus.gui import config
 from PyXFocus.gui import scene3d
 from PyXFocus.gui import settings as S
 from PyXFocus.gui.wolter import WolterParams, PARAM_FIELDS
+
+#: endstation writes the theme and the remembered folders itself, through
+#: the store apply_identity() names, so that store is pointed at a
+#: throwaway INI for the whole run, as AppSettings is by _store().
+from endstation.qt import settings as endstation_settings
+_SHARED_INI = os.path.join(tempfile.mkdtemp(), 'shared.ini')
+os.environ[S.SETTINGS_ENV] = _SHARED_INI
+endstation_settings.configure(S.ORGANISATION, S.APPLICATION,
+                              env=S.SETTINGS_ENV)
 
 RESULTS = []
 
@@ -96,7 +107,6 @@ def test_settings_round_trip_every_key():
     a = S.AppSettings.for_file(path)
     a.set_auto_trace(False)
     a.set_tab(3)
-    a.set_last_dir('/tmp/somewhere')
     a.set_config_path('/tmp/cfg.json')
     a.set_modified(True)
     a.set_recent(['/tmp/a.json', '/tmp/b.json'])
@@ -106,7 +116,6 @@ def test_settings_round_trip_every_key():
     b = S.AppSettings.for_file(path)
     assert b.auto_trace() is False
     assert b.tab() == 3
-    assert b.last_dir() == '/tmp/somewhere'
     assert b.config_path() == '/tmp/cfg.json'
     assert b.modified() is True
     assert b.recent() == ['/tmp/a.json', '/tmp/b.json']
@@ -1378,14 +1387,97 @@ def test_help_menu_offers_documentation():
 
     window = app_module.MainWindow(store=_store())
     titles = [a.text() for a in window.menuBar().actions()]
-    assert any('Help' in title for title in titles), (
-        'no Help menu, found %r' % titles)
+    assert titles == ['&View', '&Help'], 'menus are %r' % titles
 
-    help_menu = window.menuBar().actions()[0].menu()
-    actions = [a for a in help_menu.actions() if a.text() == 'Documentation']
-    assert actions, 'no Documentation action under Help'
+    labels = [a.text() for a in window.help_menu.actions()
+              if not a.isSeparator()]
+    assert labels == ['About Wolter-I Explorer', 'Documentation',
+                      'View Wiki Online'], labels
+    actions = [a for a in window.help_menu.actions()
+               if a.text() == 'Documentation']
     assert actions[0].shortcut() == QtGui.QKeySequence(
         QtGui.QKeySequence.HelpContents), 'Documentation is not on the help key'
+    assert 'Ryan Allured' in window.about_text()
+
+
+def test_the_default_store_is_the_shared_one():
+    """A bare AppSettings uses the store endstation writes the theme to."""
+    store = S.AppSettings()
+    assert os.path.normcase(store.file_name()) == os.path.normcase(
+        _SHARED_INI), store.file_name()
+
+
+def test_the_parameter_panel_is_as_wide_as_its_fields():
+    """
+    The panel's scroll area never asks for less than the fields need.
+
+    Less draws a horizontal scrollbar and clips a field, which nothing
+    but a screenshot would show.
+    """
+    import PyXFocus.gui.app as app_module
+    window = app_module.MainWindow(store=_store())
+    scroll = [s for s in window.findChildren(QtWidgets.QScrollArea)
+              if s.widget() is window.panel][0]
+    assert scroll.minimumWidth() >= window.panel.minimumSizeHint().width(), (
+        scroll.minimumWidth(), window.panel.minimumSizeHint().width())
+
+
+def test_view_theme_restyles_the_plots_and_is_remembered():
+    """
+    Choosing a theme recolours the plots, and is written to the shared store.
+
+    Runs late on purpose (the names sort near the end): installing the
+    manager sets the Fusion style on the one QApplication for good. It puts
+    the light theme back before it returns.
+    """
+    from endstation import theme as T
+    from endstation.qt import theming
+    import PyXFocus.gui.app as app_module
+
+    manager = theming.install(APP)
+    try:
+        manager.set_choice('light')
+        window = app_module.MainWindow(store=_store())
+        _settle()
+        window._runner.wait(30000)
+        _settle()
+        assert window._result is not None, 'no trace to draw'
+        spot = window.tabs.tab('spot')
+        layout = window.tabs.tab('layout')
+        layout3d = window.tabs.tab('layout3d')
+        sweep = window.tabs.sweep
+
+        window.theme_menu.actions_by_key()['dark'].trigger()
+        assert manager.choice == 'dark'
+        assert window.theme_menu.actions_by_key()['dark'].isChecked()
+        for pane in (spot, layout, layout3d):
+            pane.flush()
+
+        def face(figure):
+            return matplotlib.colors.to_hex(figure.get_facecolor())
+
+        def axes_face(axes):
+            return matplotlib.colors.to_hex(axes.get_facecolor())
+
+        assert face(spot.figure) == T.DARK.figure
+        assert axes_face(spot.ax) == T.DARK.axes
+        assert face(sweep.figure) == T.DARK.figure
+        # The primary mirror is drawn in ink, so it shows on dark.
+        inks = set(matplotlib.colors.to_hex(line.get_color())
+                   for line in layout.figure.axes[0].get_lines())
+        assert T.DARK.ink in inks, inks
+        # The 3D view stays light, so its black mirrors show.
+        assert face(layout3d.figure) == T.LIGHT.figure
+        # The metric figures are in the theme's text colour, not the one
+        # they were built under, which on dark was near black on near black.
+        hpd = window.metrics._values['hpd']
+        assert ('color: %s;' % T.DARK.text) in hpd.styleSheet(), (
+            hpd.styleSheet())
+
+        raw = QtCore.QSettings(_SHARED_INI, QtCore.QSettings.IniFormat)
+        assert raw.value('appearance/theme', type=str) == 'dark'
+    finally:
+        manager.set_choice('light')
 
 
 def main():

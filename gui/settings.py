@@ -36,6 +36,7 @@ import json
 import os
 import sys
 
+from endstation.qt import settings as endstation_settings
 from PySide6 import QtCore, QtWidgets
 
 from PyXFocus.gui import config
@@ -51,6 +52,11 @@ APPLICATION = 'WolterExplorer'
 DISPLAY_NAME = 'Wolter-I Explorer'
 
 RESET_FLAG = '--reset-settings'
+
+#: Names an INI file to use instead of the real store. For test suites:
+#: the theme and the remembered folders are written by endstation, not
+#: through AppSettings, so injecting a QSettings here cannot reach them.
+SETTINGS_ENV = 'PYXFOCUS_SETTINGS'
 
 #: Most recent configuration files to remember.
 MAX_RECENT = 8
@@ -72,9 +78,17 @@ DEFAULT_SIZE = (1180, 780)
 
 
 def apply_identity():
-    """Tell Qt who we are, so QSettings knows where to write."""
+    """
+    Tell Qt and endstation who we are, so every setting lands in one store.
+
+    endstation keeps the theme and the last folder per kind of file in the
+    store :func:`endstation.qt.settings.settings` returns, so it is named
+    here, before anything reads it, with the same organisation and
+    application as before: the file does not move.
+    """
     QtCore.QCoreApplication.setOrganizationName(ORGANISATION)
     QtCore.QCoreApplication.setApplicationName(APPLICATION)
+    endstation_settings.configure(ORGANISATION, APPLICATION, env=SETTINGS_ENV)
 
 
 def take_reset_flag(argv):
@@ -165,8 +179,7 @@ def recentre(window, rects=None):
     external display and restored on a 1440x900 laptop is centred and still
     larger than the screen, with its title bar off the top again.
 
-    ``QApplication.screenAt`` would be the natural choice but is Qt 5.10; we
-    are on 5.9, so the primary screen it is.
+    Always the primary screen, which is where a new window opens anyway.
     """
     if rects is None:
         rects = available_rects()
@@ -218,7 +231,6 @@ class AppSettings(object):
     SPLITTER = 'window/splitter'
     TAB = 'window/tab'
     AUTO_TRACE = 'ui/auto_trace'
-    LAST_DIR = 'files/last_dir'
     RECENT = 'files/recent'
     CONFIG_PATH = 'files/config_path'
     PARAMETERS = 'session/parameters'
@@ -226,7 +238,12 @@ class AppSettings(object):
     MODIFIED = 'session/modified'
 
     def __init__(self, settings=None):
-        self._settings = settings if settings is not None else QtCore.QSettings()
+        # The default is endstation's store, so the theme and the folders it
+        # remembers sit beside everything here and --reset-settings clears
+        # them too.
+        if settings is None:
+            settings = endstation_settings.settings()
+        self._settings = settings
 
     @classmethod
     def for_file(cls, path):
@@ -381,12 +398,6 @@ class AppSettings(object):
         self._settings.setValue(self.MODIFIED, bool(flag))
 
     # -- files -------------------------------------------------------------
-
-    def last_dir(self):
-        return self._get(self.LAST_DIR, '', str)
-
-    def set_last_dir(self, path):
-        self._settings.setValue(self.LAST_DIR, str(path or ''))
 
     def config_path(self):
         return self._get(self.CONFIG_PATH, '', str)

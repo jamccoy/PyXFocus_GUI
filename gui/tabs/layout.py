@@ -1,6 +1,7 @@
 """The telescope in profile, with a zoom inset on the mirrors."""
 
 import numpy as np
+from endstation.qt import theming
 
 from PyXFocus.gui import wolter
 from PyXFocus.gui.tabs.pane import FigurePane
@@ -78,7 +79,8 @@ class LayoutTab(FigurePane):
             # Only the first shell is labelled: a twenty-shell nest would
             # otherwise be twenty identical legend entries.
             first = full and shell == 0
-            ax.plot(zp, rp, color='k', lw=2.5,
+            # Ink rather than black, so the primary shows on a dark theme.
+            ax.plot(zp, rp, color=theming.current().ink, lw=2.5,
                     label='Primary' if first else None)
             ax.plot(zs, rs, color='#d62728', lw=2.5,
                     label='Secondary' if first else None)

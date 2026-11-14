@@ -13,11 +13,14 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.figure import Figure
+from endstation.qt import recent
+from endstation.qt import theming
 from endstation.qt.jobs import JobRunner
 from endstation.qt.progress_bar import DelayedProgressBar
 from PySide6 import QtWidgets
 
 from PyXFocus.gui import wolter
+from PyXFocus.gui.tabs.pane import style_figure
 
 
 class SweepTab(QtWidgets.QWidget):
@@ -79,6 +82,7 @@ class SweepTab(QtWidgets.QWidget):
         self.progress.follow(self._runner)
 
         figure = Figure(figsize=(5, 4), tight_layout=True)
+        self.figure = figure
         self.canvas = FigureCanvasQTAgg(figure)
         self.ax = figure.add_subplot(111)
         self.ax2 = self.ax.twinx()
@@ -90,6 +94,7 @@ class SweepTab(QtWidgets.QWidget):
         box.addWidget(self.canvas, 1)
 
         self._apply_default_range()
+        theming.subscribe(self._on_theme)
 
     @staticmethod
     def _spin():
@@ -142,6 +147,14 @@ class SweepTab(QtWidgets.QWidget):
         self.cancel_button.setEnabled(False)
         QtWidgets.QMessageBox.critical(self, 'Sweep failed', message)
 
+    def _on_theme(self, theme):
+        """Redraw the sweep in the new theme, or just recolour the blank axes."""
+        if self._result is not None:
+            self._draw(self._result)
+        else:
+            style_figure(self.figure, theme)
+            self.canvas.draw_idle()
+
     def _draw(self, result):
         self.ax.clear()
         self.ax2.clear()
@@ -190,13 +203,16 @@ class SweepTab(QtWidgets.QWidget):
         if handles:
             self.ax.legend(handles, labels, loc='best', fontsize=8)
 
+        style_figure(self.figure, theming.current())
         self.canvas.draw_idle()
 
     def save_csv(self):
         if self._result is None:
             return
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, 'Save sweep as CSV', 'sweep_%s.csv' % self._result.name,
+            self, 'Save sweep as CSV',
+            recent.start_in('exports', 'sweep_%s.csv' % self._result.name),
             'CSV files (*.csv)')
         if path:
+            recent.remember('exports', path)
             self._result.to_csv(path)
