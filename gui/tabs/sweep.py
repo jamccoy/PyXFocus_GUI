@@ -15,6 +15,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.figure import Figure
 from endstation.qt import recent
 from endstation.qt import theming
+from endstation.qt.canvas import restyle_toolbar
 from endstation.qt.jobs import JobRunner
 from endstation.qt.progress_bar import DelayedProgressBar
 from PySide6 import QtWidgets
@@ -90,7 +91,8 @@ class SweepTab(QtWidgets.QWidget):
         box = QtWidgets.QVBoxLayout(self)
         box.addLayout(controls)
         box.addWidget(self.progress)
-        box.addWidget(NavigationToolbar2QT(self.canvas, self))
+        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        box.addWidget(self.toolbar)
         box.addWidget(self.canvas, 1)
 
         self._apply_default_range()
@@ -149,6 +151,7 @@ class SweepTab(QtWidgets.QWidget):
 
     def _on_theme(self, theme):
         """Redraw the sweep in the new theme, or just recolour the blank axes."""
+        restyle_toolbar(self.toolbar, theme)
         if self._result is not None:
             self._draw(self._result)
         else:

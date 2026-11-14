@@ -29,6 +29,7 @@ and ``ax.clear()`` keeps the colours an axes was born with.
 
 import matplotlib
 from endstation.qt import theming
+from endstation.qt.canvas import restyle_toolbar
 from endstation.theme import pane as pane_color
 from endstation.theme import rc_params
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -161,7 +162,8 @@ class FigurePane(PaintGate, QtWidgets.QWidget):
             self.figure = Figure(figsize=(5, 4), tight_layout=True)
         self.canvas = FigureCanvasQTAgg(self.figure)
         box = QtWidgets.QVBoxLayout(self)
-        box.addWidget(NavigationToolbar2QT(self.canvas, self))
+        self.toolbar = NavigationToolbar2QT(self.canvas, self)
+        box.addWidget(self.toolbar)
         box.addWidget(self.canvas, 1)
         self._init_paint_gate()
         theming.subscribe(self._on_theme)
@@ -178,8 +180,12 @@ class FigurePane(PaintGate, QtWidgets.QWidget):
             super(FigurePane, self).flush()
         style_figure(self.figure, theme)
 
-    def _on_theme(self, _theme):
+    def _on_theme(self, theme):
         """Repaint in the new theme: now if on screen, else when shown."""
+        # The toolbar sits in the window, so it takes the window's theme
+        # even on a pane whose figure stays light. matplotlib colours its
+        # icons only when it builds them.
+        restyle_toolbar(self.toolbar, theme)
         self._painted = None
         if self.isVisible():
             self.flush()

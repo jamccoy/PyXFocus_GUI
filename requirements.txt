@@ -26,7 +26,7 @@ matplotlib==3.8.4
 # The optional-dependency guard (_optional.py), the import-boundary test
 # and the icon builder come from here. Its core has no dependencies, and
 # it needs Python 3.10 or newer.
-endstation==0.7.0
+endstation==0.7.1
 
 # Only the GUI needs these. The raytracer and test_smoke.py do not.
 # PySide6 (LGPLv3) rather than PyQt5 (GPL), which suits an MIT package, and

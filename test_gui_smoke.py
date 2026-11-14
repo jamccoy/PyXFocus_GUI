@@ -1471,6 +1471,20 @@ def test_the_parameter_panel_is_as_wide_as_its_fields():
         scroll.minimumWidth(), window.panel.minimumSizeHint().width())
 
 
+def _icon_value(toolbar):
+    """Mean HSV value of the Home icon's opaque pixels, 0 to 255."""
+    action = toolbar._actions['home']
+    image = action.icon().pixmap(24, 24).toImage()
+    values = []
+    for y in range(image.height()):
+        for x in range(image.width()):
+            colour = image.pixelColor(x, y)
+            if colour.alpha() > 128:
+                values.append(colour.value())
+    assert values, 'the Home icon has no opaque pixels'
+    return sum(values) / float(len(values))
+
+
 def test_view_theme_restyles_the_plots_and_is_remembered():
     """
     Choosing a theme recolours the plots, and is written to the shared store.
@@ -1525,6 +1539,15 @@ def test_view_theme_restyles_the_plots_and_is_remembered():
 
         raw = QtCore.QSettings(_SHARED_INI, QtCore.QSettings.IniFormat)
         assert raw.value('appearance/theme', type=str) == 'dark'
+
+        # The toolbars were built under light, so their icons are dark; on
+        # a dark theme they have to be redrawn light, or they vanish. That
+        # includes the 3D tab's, whose figure stays light.
+        for pane in (spot, sweep, layout3d):
+            light_icon = _icon_value(pane.toolbar)
+            assert light_icon > 128, (
+                '%s toolbar icons are dark on dark: %.0f'
+                % (type(pane).__name__, light_icon))
     finally:
         manager.set_choice('light')
 
