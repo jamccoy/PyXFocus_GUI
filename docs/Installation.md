@@ -13,7 +13,7 @@ cd PyXFocus
 
 ## 1. Requirements
 
-* Python 3.9 or newer (3.12 is what `requirements.txt` pins against)
+* Python 3.10 or newer, which endstation needs (3.12 is what `requirements.txt` pins against)
 * `gfortran` (macOS: `brew install gcc`; Debian/Ubuntu: `apt install gfortran`)
 * Everything else is in `requirements.txt`
 
