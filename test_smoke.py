@@ -675,9 +675,9 @@ def test_settings_is_the_only_qsettings_consumer():
 
 def test_qt_free_modules_stay_qt_free():
     """
-    The scriptable modules must stay importable without PyQt5.
+    The scriptable modules must stay importable without PySide6.
 
-    The README promises PyQt5 is needed "only if you want the GUI", and
+    The README promises PySide6 is needed "only if you want the GUI", and
     this suite is the post-build install check.
 
     A subprocess import rather than an AST scan, because this catches
@@ -1114,7 +1114,7 @@ def test_the_scene_names_no_renderer():
     The geometry layer must not reach for either backend by name.
 
     It sits beside optics.py rather than under gui/tabs/ for this reason:
-    importing gui.tabs runs matplotlib.use('Qt5Agg') and pulls in PyQt5.
+    importing gui.tabs runs matplotlib.use('QtAgg') and pulls in PySide6.
     An import scan rather than a subprocess import, because
     PyXFocus.surfaces already drags matplotlib in transitively -- so "not in
     sys.modules" is not available to assert, and what is actually promised
@@ -1134,7 +1134,8 @@ def test_the_scene_names_no_renderer():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
 
-    banned = ('matplotlib', 'mpl_toolkits', 'PyQt5', 'pyqtgraph', 'OpenGL')
+    banned = ('matplotlib', 'mpl_toolkits', 'PyQt5', 'PySide6', 'pyqtgraph',
+              'OpenGL')
     bad = [name for name in imported
            if name.split('.')[0] in banned]
     assert not bad, 'scene3d imports a renderer: %r' % (bad,)

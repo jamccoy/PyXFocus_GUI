@@ -29,7 +29,10 @@ matplotlib==3.8.4
 endstation==0.6.1
 
 # Only the GUI needs these. The raytracer and test_smoke.py do not.
-PyQt5==5.15.11
+# PySide6 (LGPLv3) rather than PyQt5 (GPL), which suits an MIT package, and
+# the binding endstation.qt is written for. -Essentials is the part of Qt
+# this app uses: widgets, OpenGL widgets and the text browser.
+PySide6-Essentials==6.12.0
 
 # Only the GPU-drawn 3D layout tab needs these. Without them that tab still
 # works, drawn by matplotlib instead -- so they are a genuine upgrade rather

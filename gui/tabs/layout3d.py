@@ -33,7 +33,7 @@ decentre all live in that plane and are the whole reason for this view.
 import numpy as np
 from mpl_toolkits.mplot3d import Axes3D             # noqa: F401  (projection)
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
-from PyQt5 import QtWidgets
+from PySide6 import QtWidgets
 
 from PyXFocus.gui import scene3d, wolter
 from PyXFocus.gui.tabs.pane import FigurePane

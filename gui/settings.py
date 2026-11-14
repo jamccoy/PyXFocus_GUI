@@ -27,7 +27,7 @@ stale session degrades field by field with notes, exactly as a stale file
 does, and there is one place to change when a parameter is added.
 
 This module may import :mod:`PyXFocus.gui.config`; config must never import
-this one. ``config`` is Qt-free on purpose (the README promises PyQt5 is
+this one. ``config`` is Qt-free on purpose (the README promises PySide6 is
 needed "only if you want the GUI") and ``test_config_imports_without_qt``
 keeps it that way.
 """
@@ -36,7 +36,7 @@ import json
 import os
 import sys
 
-from PyQt5 import QtCore, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from PyXFocus.gui import config
 from PyXFocus.gui import wolter

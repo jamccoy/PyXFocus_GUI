@@ -15,9 +15,9 @@ import collections
 import os
 
 import matplotlib
-matplotlib.use('Qt5Agg')
+matplotlib.use('QtAgg')
 
-from PyQt5 import QtWidgets
+from PySide6 import QtWidgets
 
 from PyXFocus.gui.tabs import energy, layout, layout3d, spot, sweep
 
@@ -112,7 +112,7 @@ def layout3d_tab():
 # needs params_provider -- so any interface spanning all five would either
 # exclude it or admit it with stub methods. (An ABC is not even available
 # cheaply: `class Base(QWidget, metaclass=ABCMeta)` raises a metaclass
-# conflict under PyQt5.) The mechanics the drawing tabs share live in
+# conflict under PySide6.) The mechanics the drawing tabs share live in
 # FigurePane, which is inheritance for reuse: nothing here checks for it.
 
 #: Every tab in the plot area, in the order they appear.

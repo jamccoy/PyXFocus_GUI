@@ -1,6 +1,6 @@
 # PyXFocus_GUI
 
-A PyQt5 graphical front end for **PyXFocus**, the general-purpose raytracing package for X-ray telescope design, plus the cross-platform build and test tooling needed to run it outside Windows.
+A PySide6 graphical front end for **PyXFocus**, the general-purpose raytracing package for X-ray telescope design, plus the cross-platform build and test tooling needed to run it outside Windows.
 
 This is a fork of [kbuffo/PyXFocus](https://github.com/kbuffo/PyXFocus). The raytracing engine — the Fortran kernels, surfaces, sources, and analysis routines — is the original work of Ryan Allured and contributors, under the MIT licence in `LICENSE`. This fork adds the `gui/` package (the "Wolter-I Explorer"), the cross-platform build script, the test suite, and fixes to make the package import off Windows.
 

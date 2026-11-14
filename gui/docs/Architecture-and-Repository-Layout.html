@@ -1,4 +1,4 @@
-<!-- pyxfocus-docs v1 sha256:b78eca12c22f906150104c1609ffb81c8de0b0bfdb360a4e0eb5f64427ebabcc -->
+<!-- pyxfocus-docs v1 sha256:8ea861066644e69366cca61f101ac83497d98eb2bae850a1505db77fa7f805e3 -->
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -70,7 +70,7 @@ blockquote { color: #555555; margin: 8px 0 8px 16px; }
 </tr>
 <tr>
 <td><code>gui/app.py</code></td>
-<td>PyQt5 Wolter-I Explorer</td>
+<td>PySide6 Wolter-I Explorer</td>
 </tr>
 <tr>
 <td><code>gui/config.py</code></td>
@@ -94,7 +94,7 @@ blockquote { color: #555555; margin: 8px 0 8px 16px; }
 </tr>
 <tr>
 <td><code>test_gui_smoke.py</code></td>
-<td>Settings persistence and window restore (needs PyQt5)</td>
+<td>Settings persistence and window restore (needs PySide6)</td>
 </tr>
 <tr>
 <td><code>tools/make_icon.py</code></td>
@@ -113,7 +113,7 @@ blockquote { color: #555555; margin: 8px 0 8px 16px; }
 <a name="guiscene3dpy-the-geometry-layer-with-two-adapters"></a><h2 id="guiscene3dpy-the-geometry-layer-with-two-adapters"><code>gui/scene3d.py</code> — the geometry layer, with two adapters</h2>
 <p>Two things draw the 3D layout: an OpenGL tab (<code>gui/tabs/layout3dgl.py</code>) and a matplotlib one (<code>gui/tabs/layout3d.py</code>). They have almost nothing in common at the API level — one uploads vertex buffers, the other hands 2D arrays to <code>plot_surface</code> — but the <em>decisions</em> are identical in both, and those are what is worth getting right once: which surfaces to mesh and at what resolution, that x and y stay strictly to the same scale while z is squashed, by how much, and which colour a diffraction order is drawn in.</p>
 <p>So <code>scene3d.py</code> turns a <code>System</code> and a <code>TraceResult</code> into a <code>Scene</code>: a flat list of <code>DrawItem</code> records holding nothing but numpy arrays and rgba tuples. Neither backend makes a geometric decision of its own, which is the only way two views of the same telescope stay honest about it. Vertices are in global millimetres throughout; the <code>ViewTransform</code> that squashes them into a fixed view box rides alongside as numbers, applied by the GL backend and ignored by matplotlib — which is how the fallback keeps its millimetre tick labels.</p>
-<p>It lives beside <code>optics.py</code> rather than under <code>gui/tabs/</code> on purpose: importing <code>gui.tabs</code> runs <code>matplotlib.use('Qt5Agg')</code> and pulls in PyQt5, and every decision above is meant to be assertable with no GUI anywhere near it.</p>
+<p>It lives beside <code>optics.py</code> rather than under <code>gui/tabs/</code> on purpose: importing <code>gui.tabs</code> runs <code>matplotlib.use('QtAgg')</code> and pulls in PySide6, and every decision above is meant to be assertable with no GUI anywhere near it.</p>
 <p>Which backend gets built is decided in <code>gui/tabs/__init__.py</code> by <code>select_backend(requested, available)</code> — a pure function of two arguments, separated from the construction precisely so it can be tested without a GL context. Under <code>QT_QPA_PLATFORM=offscreen</code> a <code>GLViewWidget</code> reports "Failed to create context" and then draws nothing, so the test suite forces the matplotlib backend and asserts the <em>choice</em> rather than the pixels.</p>
 <a name="guiconfigpy-versioned-json-by-design"></a><h2 id="guiconfigpy-versioned-json-by-design"><code>gui/config.py</code> — versioned JSON, by design</h2>
 <p>Configuration files are meant to be opened in an editor, hand-edited, committed next to a paper, and emailed to a collaborator — so the format is deliberately plain and stable: no timestamps, no generator string, ordered keys. <code>diff</code> should answer "did this configuration change", not "was it saved again."</p>
@@ -131,7 +131,7 @@ blockquote { color: #555555; margin: 8px 0 8px 16px; }
 <p>Everything Qt persists between runs goes through <code>AppSettings</code>, the only place in the app that touches <code>QSettings</code>. Two reasons: every key string appears exactly once, so a typo is a bug in one file rather than a value written to <code>window/tab</code> and silently read back from <code>windows/tab</code>; and the underlying <code>QSettings</code> is injectable, so the test suite runs against a temporary INI and can never mutate the developer's real preferences.</p>
 <p><strong>Every read passes an explicit <code>type=</code>.</strong> This isn't defensive style — it's the one bug the module exists to prevent. Measured across a real process boundary (write, quit, relaunch), an INI-backed <code>QSettings</code> returns the <em>string</em> <code>'false'</code> for <code>value('ui/auto_trace')</code> (which is truthy in Python) and the string <code>'3'</code> for <code>value('window/tab')</code>. macOS's native plist backend preserves real types, so an untyped read works by accident on macOS and fails only on Linux or Windows.</p>
 <p><code>session/parameters</code> holds exactly the mapping <code>gui/config.py</code> writes into a configuration file's <code>parameters</code> block — there is no second serializer, so a stale session degrades field-by-field with notes exactly as a stale file does.</p>
-<p>The dependency direction is one-way: <code>settings.py</code> may import <code>config.py</code>; <code>config.py</code> must never import <code>settings.py</code>, because <code>config.py</code> promises to work without PyQt5 installed at all.</p>
+<p>The dependency direction is one-way: <code>settings.py</code> may import <code>config.py</code>; <code>config.py</code> must never import <code>settings.py</code>, because <code>config.py</code> promises to work without PySide6 installed at all.</p>
 <a name="guiapppy-the-qt-layer"></a><h2 id="guiapppy-the-qt-layer"><code>gui/app.py</code> — the Qt layer</h2>
 <p>Wires the above into windows and widgets: a <code>TraceWorker</code>/<code>SweepWorker</code> pair (Qt threads, so a trace doesn't block the UI), the parameter panel, and the four result views described in <strong><a href="Wolter-I-Explorer-GUI.html">Wolter-I Explorer GUI</a></strong>.</p>
 <a name="a-note-on-examples"></a><h2 id="a-note-on-examples">A note on <code>examples/</code></h2>

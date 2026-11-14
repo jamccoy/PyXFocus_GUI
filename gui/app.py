@@ -1,5 +1,5 @@
 """
-Wolter-I telescope explorer -- a PyQt5 front end for PyXFocus.
+Wolter-I telescope explorer -- a PySide6 front end for PyXFocus.
 
 Set up a Wolter-I shell with labelled input fields, press Trace, and see the
 spot diagram, the telescope in profile, and the encircled-energy curve, with
@@ -18,11 +18,12 @@ import sys
 import traceback
 
 import numpy as np
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from PyXFocus.gui import docs_index
 from PyXFocus.gui import docview
 from PyXFocus.gui import settings
+from PyXFocus.gui import threads
 from PyXFocus.gui import wolter
 from PyXFocus.gui.tabs import PlotTabs
 from PyXFocus.gui.wolter import WolterParams
@@ -31,12 +32,12 @@ from PyXFocus.gui.wolter import WolterParams
 class TraceWorker(QtCore.QThread):
     """Runs a trace off the UI thread so the window stays responsive."""
 
-    #: Named `traced`, not `finished`: a pyqtSignal called `finished` on a
+    #: Named `traced`, not `finished`: a Signal called `finished` on a
     #: QThread subclass REPLACES QThread's own finished() lifecycle signal,
     #: which costs you deleteLater wiring and any "wait until the thread has
     #: actually exited" logic. SweepWorker uses `swept` for the same reason.
-    traced = QtCore.pyqtSignal(object)
-    failed = QtCore.pyqtSignal(str)
+    traced = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
 
     def __init__(self, params, parent=None):
         super(TraceWorker, self).__init__(parent)
@@ -52,7 +53,7 @@ class TraceWorker(QtCore.QThread):
 class ParameterPanel(QtWidgets.QWidget):
     """The input fields, grouped by what they describe."""
 
-    changed = QtCore.pyqtSignal()
+    changed = QtCore.Signal()
 
     def __init__(self, parent=None):
         super(ParameterPanel, self).__init__(parent)
@@ -495,22 +496,26 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.trace_button.setEnabled(False)
         self.statusBar().showMessage('Tracing…')
-        worker = TraceWorker(self.panel.params(), self)
+        # No parent: see gui/threads.py for why a window must not own it.
+        worker = TraceWorker(self.panel.params())
         self._worker = worker
         worker.traced.connect(self._on_finished)
         worker.failed.connect(self._on_failed)
-        # Without deleteLater every trace leaves a QThread QObject parented
-        # to the window forever; a session with auto-trace on accumulates
-        # hundreds. But dropping the C++ object leaves self._worker dangling,
-        # and the isRunning() guard above then raises RuntimeError on the
-        # next trace -- so forget the reference at the same time.
+        # Without deleteLater every trace leaves a QThread QObject behind
+        # forever; a session with auto-trace on accumulates hundreds. But
+        # dropping the C++ object leaves self._worker dangling, and the
+        # isRunning() guard above then raises RuntimeError on the next
+        # trace -- so forget the reference at the same time. A bound
+        # method rather than a lambda, so Qt disconnects it if this window
+        # is destroyed before the trace finishes.
         worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(lambda: self._forget_worker(worker))
-        worker.start()
+        worker.finished.connect(self._forget_worker)
+        threads.start(worker)
 
-    def _forget_worker(self, worker):
+    @QtCore.Slot()
+    def _forget_worker(self):
         """Drop our reference once a worker has finished, if it is still ours."""
-        if self._worker is worker:
+        if self._worker is self.sender():
             self._worker = None
 
     def _on_finished(self, result):
@@ -559,24 +564,24 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         help_menu = self.menuBar().addMenu('&Help')
 
-        docs_action = QtWidgets.QAction('Documentation', self)
+        docs_action = QtGui.QAction('Documentation', self)
         docs_action.setShortcut(QtGui.QKeySequence.HelpContents)
         docs_action.triggered.connect(self.show_docs)
         help_menu.addAction(docs_action)
 
-        wiki_action = QtWidgets.QAction('View Wiki Online', self)
+        wiki_action = QtGui.QAction('View Wiki Online', self)
         wiki_action.setToolTip(docs_index.WIKI_URL)
         wiki_action.triggered.connect(self.open_wiki)
         help_menu.addAction(wiki_action)
 
         help_menu.addSeparator()
 
-        about_action = QtWidgets.QAction('About Wolter-I Explorer', self)
+        about_action = QtGui.QAction('About Wolter-I Explorer', self)
         # Qt spots an action whose text starts with "About" and relocates it
         # into the macOS application menu. That is the right home for it, so
         # this is left alone deliberately rather than pinned with NoRole --
         # but it does mean it will not appear under Help on a Mac.
-        about_action.setMenuRole(QtWidgets.QAction.AboutRole)
+        about_action.setMenuRole(QtGui.QAction.AboutRole)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
 
@@ -609,7 +614,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QMessageBox.about(
             self, 'About Wolter-I Explorer',
             '<b>PyXFocus — Wolter-I Explorer</b>'
-            '<p>A PyQt5 front end for PyXFocus, the raytracing package for '
+            '<p>A PySide6 front end for PyXFocus, the raytracing package for '
             'X-ray telescope design.</p>'
             '<p>The raytracing engine is the work of Ryan Allured and '
             'contributors, under the MIT licence.</p>'
@@ -638,7 +643,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(copy)
         row.addWidget(close)
         box.addLayout(row)
-        dialog.exec_()
+        dialog.exec()
 
 
 def main():
@@ -659,7 +664,11 @@ def main():
     app.aboutToQuit.connect(window.save_settings)
 
     window.show()
-    return app.exec_()
+    status = app.exec()
+    # A trace or sweep still running at Quit finishes first: Qt aborts
+    # the process if a QThread is destroyed while it runs.
+    threads.wait_all()
+    return status
 
 
 if __name__ == '__main__':

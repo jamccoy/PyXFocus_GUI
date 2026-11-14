@@ -4,7 +4,7 @@ Qt-level smoke tests: settings persistence and window restore.
 
 Kept separate from ``test_smoke.py`` on purpose. That file is the
 post-build install check and imports no Qt at all, because the README
-promises PyQt5 is needed "only if you want the GUI" -- so a user who
+promises PySide6 is needed "only if you want the GUI" -- so a user who
 followed it and built the Fortran extensions must not see failures for an
 optional dependency. Its runner also has no skip state, so a
 ``try/except ImportError: return`` there would show a green tick for a test
@@ -37,7 +37,7 @@ import numpy as np
 #: needs no context because it is a function of two arguments.
 os.environ['PYXFOCUS_3D_BACKEND'] = 'matplotlib'
 
-from PyQt5 import QtCore, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from PyXFocus.gui import config
 from PyXFocus.gui import scene3d
@@ -129,7 +129,7 @@ def test_settings_typed_reads_survive_a_process_boundary():
     store.sync()
 
     out = subprocess.check_output([sys.executable, '-c', (
-        'from PyQt5 import QtCore\n'
+        'from PySide6 import QtCore\n'
         'from PyXFocus.gui import settings as S\n'
         'st = S.AppSettings.for_file(%r)\n'
         'raw = QtCore.QSettings(%r, QtCore.QSettings.IniFormat)'
@@ -354,6 +354,49 @@ def test_app_restores_a_session_and_traces_exactly_once():
         assert second.tabs.currentIndex() == 2
     finally:
         app_module.MainWindow.run_trace = original
+
+
+def test_a_window_dropped_mid_trace_does_not_abort():
+    """
+    The trace thread outlives its window, and a late result goes nowhere.
+
+    Qt aborts the process when a running QThread is destroyed, and under
+    PySide6 a window really is destroyed when its last reference goes. So a
+    failure here is not a FAIL line but the suite stopping dead with
+    "QThread: Destroyed while thread is still running".
+    """
+    import gc
+    import PyXFocus.gui.app as app_module
+    from PyXFocus.gui import threads
+
+    window = app_module.MainWindow(store=_store())
+    _settle()
+    window.run_trace()
+    assert threads.running(), 'run_trace started nothing to hold'
+    del window
+    gc.collect()
+    _settle()
+    threads.wait_all()
+    _settle()
+    assert not threads.running(), 'a finished trace was never released'
+
+
+def test_a_sweep_tab_dropped_mid_sweep_does_not_abort():
+    """The same for the sweep, which keeps its worker on the tab."""
+    import gc
+    from PyXFocus.gui import threads
+    from PyXFocus.gui.tabs.sweep import SweepTab
+
+    tab = SweepTab(lambda: WolterParams())
+    tab.steps.setValue(3)
+    tab.run_sweep()
+    assert threads.running(), 'run_sweep started nothing to hold'
+    del tab
+    gc.collect()
+    _settle()
+    threads.wait_all()
+    _settle()
+    assert not threads.running(), 'a finished sweep was never released'
 
 
 def test_repeated_traces_do_not_use_a_deleted_worker():
@@ -1176,7 +1219,7 @@ def test_the_paint_gate_works_without_a_canvas():
     dirty flag or doing without it. This is what catches a future edit
     quietly re-coupling the two.
     """
-    from PyQt5 import QtWidgets
+    from PySide6 import QtWidgets
     from PyXFocus.gui.tabs.pane import PaintGate
 
     class NoCanvas(PaintGate, QtWidgets.QWidget):
@@ -1299,7 +1342,7 @@ def test_docs_back_button_tracks_history():
 
 def test_help_menu_offers_documentation():
     """The menu bar exists, and the help key is wired to it."""
-    from PyQt5 import QtGui
+    from PySide6 import QtGui
     from PyXFocus.gui import app as app_module
 
     window = app_module.MainWindow(store=_store())
@@ -1325,6 +1368,15 @@ def main():
     # Nothing here may write the developer's real preferences.
     assert os.path.exists(_REAL_STORE) == _REAL_STORE_EXISTED, (
         'a test wrote the real settings file %s' % _REAL_STORE)
+
+    # Delete every widget the tests left while the QApplication still
+    # exists. Left to interpreter shutdown, PySide6 destroys them after
+    # it, in no fixed order, and the process aborts with "pure virtual
+    # method called" after every test has passed.
+    del _KEEP_ALIVE[:]
+    for widget in APP.topLevelWidgets():
+        widget.deleteLater()
+    APP.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
 
     failures = [(n, tb) for n, ok, tb in RESULTS if not ok]
     print('\n%d passed, %d failed' % (len(RESULTS) - len(failures), len(failures)))

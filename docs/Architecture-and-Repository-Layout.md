@@ -13,13 +13,13 @@
 | `gui/wolter.py` | One-call Wolter-I trace, plus parameter sweeps |
 | `gui/optics.py` | Elements, beams and the tracer they compose into |
 | `gui/scene3d.py` | The 3D picture, described without naming a renderer |
-| `gui/app.py` | PyQt5 Wolter-I Explorer |
+| `gui/app.py` | PySide6 Wolter-I Explorer |
 | `gui/config.py` | Versioned JSON configuration format |
 | `gui/settings.py` | What the app remembers between runs |
 | `gui/icon.py` | The app icon, drawn programmatically |
 | `build_extensions.py` | Compiles the Fortran extensions |
 | `test_smoke.py` | Import and physics checks (no Qt) |
-| `test_gui_smoke.py` | Settings persistence and window restore (needs PyQt5) |
+| `test_gui_smoke.py` | Settings persistence and window restore (needs PySide6) |
 | `tools/make_icon.py` | Builds `resources/PyXFocus.icns` |
 | `tools/make_launcher.py` | Builds the double-clickable macOS `.app` |
 
@@ -37,7 +37,7 @@ Two things draw the 3D layout: an OpenGL tab (`gui/tabs/layout3dgl.py`) and a ma
 
 So `scene3d.py` turns a `System` and a `TraceResult` into a `Scene`: a flat list of `DrawItem` records holding nothing but numpy arrays and rgba tuples. Neither backend makes a geometric decision of its own, which is the only way two views of the same telescope stay honest about it. Vertices are in global millimetres throughout; the `ViewTransform` that squashes them into a fixed view box rides alongside as numbers, applied by the GL backend and ignored by matplotlib — which is how the fallback keeps its millimetre tick labels.
 
-It lives beside `optics.py` rather than under `gui/tabs/` on purpose: importing `gui.tabs` runs `matplotlib.use('Qt5Agg')` and pulls in PyQt5, and every decision above is meant to be assertable with no GUI anywhere near it.
+It lives beside `optics.py` rather than under `gui/tabs/` on purpose: importing `gui.tabs` runs `matplotlib.use('QtAgg')` and pulls in PySide6, and every decision above is meant to be assertable with no GUI anywhere near it.
 
 Which backend gets built is decided in `gui/tabs/__init__.py` by `select_backend(requested, available)` — a pure function of two arguments, separated from the construction precisely so it can be tested without a GL context. Under `QT_QPA_PLATFORM=offscreen` a `GLViewWidget` reports "Failed to create context" and then draws nothing, so the test suite forces the matplotlib backend and asserts the *choice* rather than the pixels.
 
@@ -67,7 +67,7 @@ Everything Qt persists between runs goes through `AppSettings`, the only place i
 
 `session/parameters` holds exactly the mapping `gui/config.py` writes into a configuration file's `parameters` block — there is no second serializer, so a stale session degrades field-by-field with notes exactly as a stale file does.
 
-The dependency direction is one-way: `settings.py` may import `config.py`; `config.py` must never import `settings.py`, because `config.py` promises to work without PyQt5 installed at all.
+The dependency direction is one-way: `settings.py` may import `config.py`; `config.py` must never import `settings.py`, because `config.py` promises to work without PySide6 installed at all.
 
 ## `gui/app.py` — the Qt layer
 

@@ -18,7 +18,7 @@ tuples.  Neither backend gets to make a geometric decision on its own, which
 is the only way two views of the same telescope stay honest about it.
 
 It lives beside ``optics.py`` rather than under ``gui/tabs/`` on purpose:
-importing ``gui.tabs`` runs ``matplotlib.use('Qt5Agg')`` and pulls in PyQt5,
+importing ``gui.tabs`` runs ``matplotlib.use('QtAgg')`` and pulls in PySide6,
 and every decision above is meant to be assertable without a GUI anywhere
 near it.  (``PyXFocus.surfaces`` imports matplotlib transitively, so what is
 promised and tested here is the narrower thing: nothing in this module is

@@ -4,7 +4,7 @@ Where the bundled documentation lives, and what order it reads in.
 Qt-free on purpose, like :mod:`PyXFocus.gui.wolter` and
 :mod:`PyXFocus.gui.config`: ``tools/build_docs.py`` imports this to know what
 to generate, and ``test_smoke.py`` imports it to check the generated HTML is
-current. Neither should need PyQt5 installed, and
+current. Neither should need PySide6 installed, and
 ``test_qt_free_modules_stay_qt_free`` is what enforces that.
 
 Two directories, and the distinction matters:

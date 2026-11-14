@@ -10,20 +10,21 @@ See the contract documented above ``TABS`` in this package's __init__.
 import traceback
 
 import numpy as np
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.figure import Figure
-from PyQt5 import QtCore, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
+from PyXFocus.gui import threads
 from PyXFocus.gui import wolter
 
 
 class SweepWorker(QtCore.QThread):
     """Runs a parameter sweep off the UI thread, with cancel support."""
 
-    progressed = QtCore.pyqtSignal(int, int)
-    swept = QtCore.pyqtSignal(object)
-    failed = QtCore.pyqtSignal(str)
+    progressed = QtCore.Signal(int, int)
+    swept = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
 
     def __init__(self, params, name, start, stop, steps, parent=None):
         super(SweepWorker, self).__init__(parent)
@@ -143,11 +144,11 @@ class SweepTab(QtWidgets.QWidget):
 
         self._worker = SweepWorker(self._params_provider(), name,
                                    self.start.value(), self.stop.value(),
-                                   self.steps.value(), self)
+                                   self.steps.value())
         self._worker.progressed.connect(self._on_progress)
         self._worker.swept.connect(self._on_swept)
         self._worker.failed.connect(self._on_failed)
-        self._worker.start()
+        threads.start(self._worker)
 
     def is_running(self):
         """True while a sweep is in flight (drives the Run menu)."""

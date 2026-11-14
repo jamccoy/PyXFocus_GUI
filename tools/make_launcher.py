@@ -105,7 +105,7 @@ def _verify_interpreter(python_path):
               file=sys.stderr)
         return False
     probe = ('import sys; sys.path.insert(0, %r); '
-            'import PyQt5.QtWidgets, PyXFocus.gui.app' % REPO_PARENT)
+            'import PySide6.QtWidgets, PyXFocus.gui.app' % REPO_PARENT)
     try:
         _run([python_path, '-c', probe])
     except subprocess.CalledProcessError as err:
@@ -215,7 +215,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--app', default=DEFAULT_APP)
     parser.add_argument('--python', default=DEFAULT_PYTHON,
-                        help='interpreter with PyQt5 and the built '
+                        help='interpreter with PySide6 and the built '
                              'extensions (default: %s)' % DEFAULT_PYTHON)
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()

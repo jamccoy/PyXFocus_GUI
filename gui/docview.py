@@ -8,7 +8,7 @@ conversion happens ahead of time rather than in Qt.
 Two deliberate departures from ``MainWindow.show_script``, which is otherwise
 the dialog pattern this follows:
 
-* **Non-modal.** ``show_script`` calls ``exec_()`` and blocks; documentation
+* **Non-modal.** ``show_script`` calls ``exec()`` and blocks; documentation
   that freezes the application you are reading about is documentation you
   cannot follow along with. The consequence is that the caller has to keep a
   reference -- a non-modal QDialog that goes out of scope is garbage
@@ -16,7 +16,7 @@ the dialog pattern this follows:
 * **QTextBrowser, driven by setSource, not setHtml.** ``setSource`` gives
   back/forward history, relative link resolution and (later) images for free.
   ``setHtml`` gives none of them and would mean hand-rolling a history stack.
-  Verified working on Qt 5.9.7, which is what the app actually runs on.
+  Verified working on Qt 5.9.7 under PyQt5 and on PySide6 6.12.
 
 ``setOpenLinks(False)`` is what makes the interception possible: without it
 QTextBrowser follows internal links itself and hands external ones to
@@ -25,7 +25,7 @@ nothing at all, so an http link would appear simply not to work.
 
 import os
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from PyXFocus.gui import docs_index
 

@@ -36,7 +36,7 @@ import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 from OpenGL.GL import (GL_ALPHA_TEST, GL_BLEND, GL_CULL_FACE, GL_DEPTH_TEST,
                        GL_FALSE, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA)
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from PyXFocus.gui import scene3d, wolter
 from PyXFocus.gui.tabs.pane import PaintGate
@@ -283,7 +283,7 @@ class GLViewWidget(gl.GLViewWidget):
 
     #: Emitted whenever the camera moves, so a readout can follow it.
     #: GLViewWidget itself is silent about this.
-    cameraChanged = QtCore.pyqtSignal()
+    cameraChanged = QtCore.Signal()
 
     def __init__(self, *args, **kwargs):
         super(GLViewWidget, self).__init__(*args, **kwargs)
@@ -298,8 +298,7 @@ class GLViewWidget(gl.GLViewWidget):
 
     def wheelEvent(self, event):
         before = float(self.opts['distance'])
-        position = event.position() if hasattr(event, 'position') \
-            else event.posF()
+        position = event.position()
         cursor = world_at(self.opts['center'], self.opts['elevation'],
                           self.opts['azimuth'], before,
                           max(1, self.width()), max(1, self.height()),
@@ -329,7 +328,7 @@ class GLViewWidget(gl.GLViewWidget):
 
     def mousePressEvent(self, event):
         if self._zooming(event):
-            self._box_origin = event.pos()
+            self._box_origin = event.position().toPoint()
             self._band.setGeometry(QtCore.QRect(self._box_origin,
                                                 QtCore.QSize()))
             self._band.show()
@@ -340,7 +339,8 @@ class GLViewWidget(gl.GLViewWidget):
     def mouseMoveEvent(self, event):
         if self._box_origin is not None:
             self._band.setGeometry(
-                QtCore.QRect(self._box_origin, event.pos()).normalized())
+                QtCore.QRect(self._box_origin,
+                             event.position().toPoint()).normalized())
             event.accept()
             return
         super(GLViewWidget, self).mouseMoveEvent(event)
@@ -352,12 +352,12 @@ class GLViewWidget(gl.GLViewWidget):
             return
         origin, self._box_origin = self._box_origin, None
         self._band.hide()
-        rect = QtCore.QRect(origin, event.pos()).normalized()
+        rect = QtCore.QRect(origin, event.position().toPoint()).normalized()
         if min(rect.width(), rect.height()) >= self.MIN_BOX_PIXELS:
             # Direction, which normalized() throws away: left to right means
             # "look at this", right to left means "shrink what I have into
             # this". A vertical-only drag is neither, and reads as inward.
-            self.zoom_to_rect(rect, zoom_in=event.pos().x() >= origin.x())
+            self.zoom_to_rect(rect, zoom_in=event.position().x() >= origin.x())
         event.accept()
 
     def zoom_to_rect(self, rect, zoom_in=True):
@@ -390,7 +390,7 @@ class GLViewWidget(gl.GLViewWidget):
         """
         if ev.type() == QtCore.QEvent.NativeGesture \
                 and ev.gestureType() == QtCore.Qt.ZoomNativeGesture:
-            self.pinch(ev.value(), ev.localPos())
+            self.pinch(ev.value(), ev.position())
             return True
         return super(GLViewWidget, self).event(ev)
 

@@ -1,6 +1,6 @@
 # PyXFocus_GUI
 
-A PyQt5 graphical front end for **PyXFocus**, the general purpose raytracing
+A PySide6 graphical front end for **PyXFocus**, the general purpose raytracing
 package for X-ray telescope design, plus the cross-platform build and test
 tooling needed to run it outside Windows.
 
@@ -408,10 +408,10 @@ generated from them, and the [wiki](https://github.com/jamccoy/PyXFocus_GUI/wiki
 which is a published mirror. Edit `docs/`, never the wiki's web editor — the
 next publish overwrites anything typed there.
 
-The app reads generated HTML rather than the Markdown itself because it
-cannot read Markdown. `QTextBrowser.setMarkdown` arrived in Qt 5.14, and the
-interpreter these extensions are built for ships Qt 5.9, so the conversion
-happens ahead of time and the result is committed, the same way
+The app reads generated HTML rather than the Markdown itself because it was
+written for Qt 5.9, which cannot read Markdown (`QTextBrowser.setMarkdown`
+arrived in Qt 5.14), so the conversion happens ahead of time and the result
+is committed, the same way
 `resources/PyXFocus.icns` is. After editing any page:
 
 ```bash
@@ -446,11 +446,11 @@ deliberate step.
 | `lenses.py` | Singlet and doublet lenses |
 | `gui/optics.py` | Optical systems as lists of elements, and the tracer that walks them |
 | `gui/wolter.py` | Wolter-I expressed in those elements, plus parameter sweeps |
-| `gui/app.py` | PyQt5 Wolter-I Explorer |
+| `gui/app.py` | PySide6 Wolter-I Explorer |
 | `gui/tabs/` | One module per plot tab, registered in `tabs/__init__.py` |
 | `build_extensions.py` | Compiles the Fortran extensions |
 | `test_smoke.py` | Import and physics checks (no Qt) |
-| `test_gui_smoke.py` | Settings persistence and window restore (needs PyQt5) |
+| `test_gui_smoke.py` | Settings persistence and window restore (needs PySide6) |
 | `gui/config.py` | Versioned JSON configuration format |
 | `gui/settings.py` | What the app remembers between runs |
 | `gui/icon.py` | The app icon, drawn programmatically |

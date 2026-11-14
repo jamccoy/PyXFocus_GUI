@@ -22,22 +22,21 @@ duplicating a dirty flag is exactly how two tabs drift into disagreeing
 about when a repaint is owed.
 """
 
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
-from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.figure import Figure
-from PyQt5 import QtWidgets
+from PySide6 import QtWidgets
 
 
 class PaintGate(object):
     """
     "There is a newer result than the pixels", without a canvas.
 
-    A mixin, and ``QtWidgets.QWidget`` must come *last* in the bases: PyQt5
-    takes the C++ class from the last Qt base, and :meth:`showEvent` relies
-    on plain cooperative ``super()`` to reach it.
+    A mixin, and ``QtWidgets.QWidget`` must come *last* in the bases, because
+    :meth:`showEvent` relies on plain cooperative ``super()`` to reach it.
 
     There is deliberately no ``__init__`` here.  A cooperative one across a
-    plain object and a QWidget buys nothing under PyQt5's metaclass rules,
+    plain object and a QWidget buys nothing under PySide6's metaclass rules,
     so subclasses call :meth:`_init_paint_gate` explicitly and it is
     obvious in each of them that they did.
     """
