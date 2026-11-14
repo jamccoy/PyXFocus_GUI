@@ -1,30 +1,30 @@
 """
 The documentation viewer behind Help -> Documentation.
 
-Reads the HTML that ``tools/build_docs.py`` generates from ``docs/*.md``.
-Nothing here parses Markdown: see :mod:`PyXFocus.gui.docs_index` for why the
-conversion happens ahead of time rather than in Qt.
+Reads ``docs/*.md`` and renders each page as it is opened, with endstation's
+markdown renderer, into endstation's reading pane: a reading font, a column of
+readable width, and tables in the theme's colours. See
+:mod:`PyXFocus.gui.docs_index` for which pages there are.
 
-Two deliberate departures from ``MainWindow.show_script``, which is otherwise
-the dialog pattern this follows:
+Three things it does that a bare QTextBrowser would not:
 
-* **Non-modal.** ``show_script`` calls ``exec()`` and blocks; documentation
-  that freezes the application you are reading about is documentation you
-  cannot follow along with. The consequence is that the caller has to keep a
-  reference -- a non-modal QDialog that goes out of scope is garbage
-  collected and vanishes -- which is what ``MainWindow._docs_window`` is for.
-* **QTextBrowser, driven by setSource, not setHtml.** ``setSource`` gives
-  back/forward history, relative link resolution and (later) images for free.
-  ``setHtml`` gives none of them and would mean hand-rolling a history stack.
-  Verified working on Qt 5.9.7 under PyQt5 and on PySide6 6.12.
+* **Non-modal.** ``MainWindow.show_script`` calls ``exec()`` and blocks;
+  documentation that freezes the application you are reading about is
+  documentation you cannot follow along with. The caller keeps a reference,
+  because a non-modal QDialog that goes out of scope is collected and
+  vanishes; that is what ``MainWindow._docs_window`` is for.
+* **Its own history.** A page is set as HTML, which gives the browser no
+  history of its own, so Back and Forward walk two lists of page keys here.
+* **Its own links.** ``setOpenLinks(False)``: a link to another page opens
+  in this window, and a web link goes to the system browser. Left to itself,
+  QTextBrowser would load the web page into the pane as a blank document.
 
-``setOpenLinks(False)`` is what makes the interception possible: without it
-QTextBrowser follows internal links itself and hands external ones to
-nothing at all, so an http link would appear simply not to work.
+A theme change re-renders the page in place, keeping the reader's position,
+because the tables' colours are fixed when a page is set.
 """
 
-import os
-
+from endstation.qt import theming
+from endstation.qt.reading import ReadingBrowser, render_into, text_color
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from PyXFocus.gui import docs_index
@@ -34,8 +34,8 @@ class DocsWindow(QtWidgets.QDialog):
     """The bundled documentation, one page at a time."""
 
     #: Wide enough for the module table in Architecture-and-Repository-Layout
-    #: without horizontal scrolling.
-    DEFAULT_SIZE = (940, 700)
+    #: at the reading pane's column width.
+    DEFAULT_SIZE = (1000, 720)
 
     def __init__(self, parent=None, open_external=None):
         super(DocsWindow, self).__init__(parent)
@@ -44,6 +44,11 @@ class DocsWindow(QtWidgets.QDialog):
         #: AppSettings(settings=...).
         self._open_external = (open_external if open_external is not None
                                else QtGui.QDesktopServices.openUrl)
+        self._pages = docs_index.pages()
+        #: Page keys behind and ahead of the one shown.
+        self._back = []
+        self._forward = []
+        self._key = None
 
         self.setWindowTitle('PyXFocus Documentation')
         self.resize(*self.DEFAULT_SIZE)
@@ -56,12 +61,10 @@ class DocsWindow(QtWidgets.QDialog):
             self.contents.addItem(item)
         self.contents.currentItemChanged.connect(self._on_contents_selected)
 
-        self.browser = QtWidgets.QTextBrowser()
+        self.browser = ReadingBrowser()
         self.browser.setOpenLinks(False)
         self.browser.setOpenExternalLinks(False)
-        self.browser.setSearchPaths([docs_index.HTML_DIR])
         self.browser.anchorClicked.connect(self._on_anchor)
-        self.browser.sourceChanged.connect(self._on_source_changed)
 
         splitter = QtWidgets.QSplitter()
         splitter.addWidget(self.contents)
@@ -69,14 +72,9 @@ class DocsWindow(QtWidgets.QDialog):
         splitter.setStretchFactor(1, 1)
 
         self.back_button = QtWidgets.QPushButton('Back')
-        self.back_button.clicked.connect(self.browser.backward)
-        self.back_button.setEnabled(False)
-        self.browser.backwardAvailable.connect(self.back_button.setEnabled)
-
+        self.back_button.clicked.connect(self.go_back)
         self.forward_button = QtWidgets.QPushButton('Forward')
-        self.forward_button.clicked.connect(self.browser.forward)
-        self.forward_button.setEnabled(False)
-        self.browser.forwardAvailable.connect(self.forward_button.setEnabled)
+        self.forward_button.clicked.connect(self.go_forward)
 
         online = QtWidgets.QPushButton('View on the wiki')
         online.setToolTip(docs_index.WIKI_URL)
@@ -98,34 +96,59 @@ class DocsWindow(QtWidgets.QDialog):
         box.addLayout(row)
 
         self.show_page(docs_index.PAGES[0].key)
+        theming.subscribe(self._on_theme)
 
     # -- navigation --------------------------------------------------------
 
     def show_page(self, key, fragment=''):
-        """
-        Display page ``key``, optionally scrolled to ``fragment``.
-
-        Goes through setSource rather than setHtml so the page joins the
-        browser's own history and Back keeps working.
-        """
-        path = docs_index.html_path(key)
-        if not os.path.isfile(path):
-            # Only reachable if the generated HTML was deleted but the app
-            # was not rebuilt; build_docs.check() is what normally catches
-            # this, long before anyone clicks Help.
-            self.browser.setHtml(
-                '<h1>Not built</h1><p>%s is missing. Run '
-                '<code>python tools/build_docs.py</code>.</p>'
-                % os.path.basename(path))
+        """Display page ``key``, adding the page left behind to Back."""
+        if key == self._key:
+            if fragment:
+                self.browser.scrollToAnchor(fragment)
             return
-        url = QtCore.QUrl.fromLocalFile(path)
+        if self._key is not None:
+            self._back.append(self._key)
+            del self._forward[:]
+        self._display(key)
         if fragment:
-            url.setFragment(fragment)
-        self.browser.setSource(url)
+            self.browser.scrollToAnchor(fragment)
+
+    def go_back(self):
+        if self._back:
+            self._forward.append(self._key)
+            self._display(self._back.pop())
+
+    def go_forward(self):
+        if self._forward:
+            self._back.append(self._key)
+            self._display(self._forward.pop())
 
     def current_key(self):
         """The page being shown, or None before the first one loads."""
-        return docs_index.key_for_href(self.browser.source().fileName())
+        return self._key
+
+    def _display(self, key, keep_position=False):
+        """Render ``key`` into the pane and bring everything else into step."""
+        scroll = self.browser.verticalScrollBar()
+        position = scroll.value()
+        if key in self._pages:
+            source = self._pages[key].read()
+        else:
+            source = ('# %s\n\n`docs/%s.md` is missing from this copy.\n'
+                      % (docs_index.title_for(key), key))
+        render_into(self.browser, source,
+                    device_pixel_ratio=self.devicePixelRatioF(),
+                    text_color=text_color(self))
+        scroll.setValue(position if keep_position else 0)
+        self._key = key
+        self.back_button.setEnabled(bool(self._back))
+        self.forward_button.setEnabled(bool(self._forward))
+        self._select_in_contents(key)
+
+    def _on_theme(self, _theme):
+        """Re-render in the new colours; the reader keeps their place."""
+        if self._key is not None:
+            self._display(self._key, keep_position=True)
 
     def _on_anchor(self, url):
         """
@@ -147,7 +170,7 @@ class DocsWindow(QtWidgets.QDialog):
             return
 
         key = docs_index.key_for_href(url.fileName())
-        if key is None:
+        if key is None or key not in self._pages:
             QtWidgets.QMessageBox.information(
                 self, 'Unknown link',
                 'This link points at %s, which is not one of the bundled '
@@ -155,11 +178,8 @@ class DocsWindow(QtWidgets.QDialog):
             return
         self.show_page(key, fragment)
 
-    def _on_source_changed(self, url):
-        """Keep the contents list in step with whatever the browser shows."""
-        key = docs_index.key_for_href(url.fileName())
-        if key is None:
-            return
+    def _select_in_contents(self, key):
+        """Keep the contents list in step with whatever the pane shows."""
         self.contents.blockSignals(True)
         for row in range(self.contents.count()):
             item = self.contents.item(row)

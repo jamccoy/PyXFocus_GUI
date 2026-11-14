@@ -1347,7 +1347,7 @@ def test_docs_render_as_utf8():
 def test_docs_internal_link_navigates_in_place():
     """An internal link changes page and moves the contents selection."""
     window, recorder = _docs_window()
-    window._on_anchor(QtCore.QUrl('Installation.html'))
+    window._on_anchor(QtCore.QUrl('Installation.md'))
     assert window.current_key() == 'Installation'
     selected = window.contents.currentItem().data(QtCore.Qt.UserRole)
     assert selected == 'Installation', (
@@ -1370,14 +1370,42 @@ def test_docs_external_link_leaves_the_page_alone():
     assert window.current_key() == before, 'an external link changed the page'
 
 
-def test_docs_back_button_tracks_history():
-    """Back is dead until there is somewhere to go back to."""
+def test_docs_back_and_forward_walk_the_history():
+    """
+    Back and Forward retrace the pages read, and are dead at either end.
+
+    The pane is set as HTML, which keeps no history of its own, so this is
+    the window's own pair of lists being exercised.
+    """
     window, _ = _docs_window()
+    first = window.current_key()
     assert not window.back_button.isEnabled()
+    assert not window.forward_button.isEnabled()
+
     window.show_page('Installation')
-    APP.processEvents()
-    assert window.back_button.isEnabled(), (
-        'setSource did not record history -- Back can never work')
+    window.show_page('Known-Limitations')
+    window.go_back()
+    assert window.current_key() == 'Installation'
+    assert window.forward_button.isEnabled()
+    window.go_back()
+    assert window.current_key() == first
+    assert not window.back_button.isEnabled()
+    window.go_forward()
+    assert window.current_key() == 'Installation'
+    selected = window.contents.currentItem().data(QtCore.Qt.UserRole)
+    assert selected == 'Installation', selected
+
+    # Going somewhere new from the middle drops what was ahead.
+    window.show_page('Home')
+    assert not window.forward_button.isEnabled()
+
+
+def test_docs_tables_are_tables():
+    """A Markdown table arrives as a table, not as pipes in a paragraph."""
+    window, _ = _docs_window()
+    window.show_page('Architecture-and-Repository-Layout')
+    assert '<table' in window.browser.toHtml(), 'no table in the page'
+    assert '| ---' not in window.browser.toPlainText()
 
 
 def test_help_menu_offers_documentation():

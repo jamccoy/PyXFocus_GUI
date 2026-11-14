@@ -44,7 +44,3 @@ PyOpenGL==3.1.10
 # f2py falls back to its meson backend, which needs both of these on PATH.
 meson==1.12.0; python_version >= "3.12"
 ninja==1.13.0; python_version >= "3.12"
-
-# Building the bundled HTML documentation (tools/build_docs.py). Reading it
-# needs nothing; only regenerating it after editing docs/*.md does.
-markdown==3.10.3

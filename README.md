@@ -403,28 +403,20 @@ print('HPD [arcsec]:', anal.hpd(rays) / z0 * 180 / np.pi * 3600)
 ## Documentation
 
 The docs live in `docs/` as Markdown, and that folder is the source of truth.
-They reach you two ways: **Help → Documentation** in the app, reading HTML
-generated from them, and the [wiki](https://github.com/jamccoy/PyXFocus_GUI/wiki),
-which is a published mirror. Edit `docs/`, never the wiki's web editor — the
-next publish overwrites anything typed there.
+They reach you two ways: **Help → Documentation** in the app, which renders
+the Markdown as you open each page, and the
+[wiki](https://github.com/jamccoy/PyXFocus_GUI/wiki), which is a published
+mirror. Edit `docs/`, never the wiki's web editor — the next publish
+overwrites anything typed there.
 
-The app reads generated HTML rather than the Markdown itself because it was
-written for Qt 5.9, which cannot read Markdown (`QTextBrowser.setMarkdown`
-arrived in Qt 5.14), so the conversion happens ahead of time and the result
-is committed, the same way
-`resources/PyXFocus.icns` is. After editing any page:
+The viewer renders with endstation's Markdown renderer into its reading pane,
+so an edited page shows up the next time it is opened, with no build step.
+That renderer reads a deliberate subset of Markdown: headings, paragraphs,
+flat lists, quotes, fenced code, tables, links, bold, italic and code spans.
+A nested list or inline HTML shows up as text, so check a new page in the
+viewer.
 
-```bash
-pip install markdown        # once; only needed to build, not to read
-python tools/build_docs.py
-```
-
-`python tools/build_docs.py --check` reports whether the committed HTML still
-matches the Markdown, and `test_smoke.py` runs that check, so forgetting to
-rebuild fails the suite instead of silently shipping the previous wording.
-The check itself needs no `markdown` install.
-
-To update the wiki afterwards:
+To update the wiki after editing:
 
 ```bash
 python tools/publish_wiki.py --check    # what would change
@@ -455,10 +447,8 @@ deliberate step.
 | `gui/settings.py` | What the app remembers between runs |
 | `gui/icon.py` | The app icon, drawn programmatically |
 | `gui/docs_index.py` | Which documentation pages exist, and where they live |
-| `gui/docview.py` | The Help → Documentation viewer |
+| `gui/docview.py` | The Help → Documentation viewer, which renders `docs/` |
 | `docs/` | The documentation itself, in Markdown — the source of truth |
-| `gui/docs/` | HTML generated from `docs/`, committed, what the viewer reads |
-| `tools/build_docs.py` | Renders `docs/*.md` → `gui/docs/*.html` |
 | `tools/publish_wiki.py` | Copies `docs/*.md` into a GitHub wiki checkout |
 | `tools/make_icon.py` | Builds `resources/PyXFocus.icns` |
 | `tools/make_launcher.py` | Builds the double-clickable macOS `.app` |

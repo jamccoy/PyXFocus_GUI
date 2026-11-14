@@ -1881,24 +1881,29 @@ def test_reproducible():
     assert a.hpd_arcsec == b.hpd_arcsec, 'trace is not reproducible'
 
 
-def test_docs_html_is_current():
+def test_docs_render_without_raw_markdown():
     """
-    The generated documentation matches the Markdown it came from.
+    Every page renders with endstation's renderer and no syntax shows through.
 
-    This is the tripwire for the one failure mode a committed build artifact
-    has: editing docs/*.md and shipping without re-running
-    ``tools/build_docs.py``, so the app displays the previous wording. It
-    imports no Markdown parser -- check() re-hashes the sources -- so it
-    still runs in this suite's dependency-free install check.
+    The renderer reads a subset of Markdown, and what it does not read
+    arrives on the page as text. A leftover ``**``, a backtick, or a ``](``
+    of a link it did not recognise is what that looks like, so each is
+    looked for in the rendered text outside code.
     """
-    import os
-    import sys
-    tools = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tools')
-    if tools not in sys.path:
-        sys.path.insert(0, tools)
-    import build_docs
-    assert build_docs.check() == 0, (
-        'the bundled docs are stale -- run `python tools/build_docs.py`')
+    import re
+    from endstation.docs import render_markdown
+    from PyXFocus.gui import docs_index
+
+    bad = []
+    for page in docs_index.pages():
+        assert page.available, '%s: %s' % (page.slug, page.unavailable)
+        html = render_markdown(page.read(), render_math=False).html
+        prose = re.sub(r'<pre.*?</pre>|<code>.*?</code>', '', html, flags=re.S)
+        text = re.sub(r'<[^>]+>', '', prose)
+        for mark in ('**', '`', '](', '$'):
+            if mark in text:
+                bad.append('%s shows %r' % (page.slug, mark))
+    assert not bad, 'unrendered Markdown:\n  ' + '\n  '.join(bad)
 
 
 def test_docs_pages_and_sources_agree():
