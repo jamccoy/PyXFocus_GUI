@@ -1,4 +1,4 @@
-<!-- pyxfocus-docs v1 sha256:8ea861066644e69366cca61f101ac83497d98eb2bae850a1505db77fa7f805e3 -->
+<!-- pyxfocus-docs v1 sha256:609b68529095a0648f633c7d27bfa3f44d36dd2f225c91b760eeab0528d6e4af -->
 <html>
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -133,7 +133,7 @@ blockquote { color: #555555; margin: 8px 0 8px 16px; }
 <p><code>session/parameters</code> holds exactly the mapping <code>gui/config.py</code> writes into a configuration file's <code>parameters</code> block — there is no second serializer, so a stale session degrades field-by-field with notes exactly as a stale file does.</p>
 <p>The dependency direction is one-way: <code>settings.py</code> may import <code>config.py</code>; <code>config.py</code> must never import <code>settings.py</code>, because <code>config.py</code> promises to work without PySide6 installed at all.</p>
 <a name="guiapppy-the-qt-layer"></a><h2 id="guiapppy-the-qt-layer"><code>gui/app.py</code> — the Qt layer</h2>
-<p>Wires the above into windows and widgets: a <code>TraceWorker</code>/<code>SweepWorker</code> pair (Qt threads, so a trace doesn't block the UI), the parameter panel, and the four result views described in <strong><a href="Wolter-I-Explorer-GUI.html">Wolter-I Explorer GUI</a></strong>.</p>
+<p>Wires the above into windows and widgets: a trace and a sweep run on endstation's <code>JobRunner</code> (a worker thread each, so neither blocks the UI), the parameter panel, and the four result views described in <strong><a href="Wolter-I-Explorer-GUI.html">Wolter-I Explorer GUI</a></strong>.</p>
 <a name="a-note-on-examples"></a><h2 id="a-note-on-examples">A note on <code>examples/</code></h2>
 <p>Most scripts under <code>examples/</code> predate the current package layout. They import a module named <code>traces</code> (an older name for this package) or the removed monolithic <code>PyTrace</code> API, and will not run as written. Treat them as reference for how traces were assembled rather than as runnable code; <code>examples/wolterSchwarzschildTest.py</code> uses the current <code>PyXFocus.*</code> imports and does run.</p>
 </body>

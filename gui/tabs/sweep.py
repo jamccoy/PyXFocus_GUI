@@ -3,54 +3,21 @@ The parameter-sweep tab: vary one parameter, plot how performance responds.
 
 Kept out of the drawing-tab family on purpose. The other tabs are handed a
 TraceResult and draw it; this one runs its own computation on its own
-worker thread, so it has no ``set_result`` and ``PlotTabs`` never feeds it.
+JobRunner, so it has no ``set_result`` and ``PlotTabs`` never feeds it.
 See the contract documented above ``TABS`` in this package's __init__.
 """
 
-import traceback
+import threading
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.figure import Figure
-from PySide6 import QtCore, QtWidgets
+from endstation.qt.jobs import JobRunner
+from endstation.qt.progress_bar import DelayedProgressBar
+from PySide6 import QtWidgets
 
-from PyXFocus.gui import threads
 from PyXFocus.gui import wolter
-
-
-class SweepWorker(QtCore.QThread):
-    """Runs a parameter sweep off the UI thread, with cancel support."""
-
-    progressed = QtCore.Signal(int, int)
-    swept = QtCore.Signal(object)
-    failed = QtCore.Signal(str)
-
-    def __init__(self, params, name, start, stop, steps, parent=None):
-        super(SweepWorker, self).__init__(parent)
-        self.params = params
-        self.name = name
-        #: Named start_value/stop_value, not start/stop: `self.start` would
-        #: shadow QThread.start() and break the thread launch.
-        self.start_value = start
-        self.stop_value = stop
-        self.steps = steps
-        self._stop = False
-
-    def cancel(self):
-        self._stop = True
-
-    def run(self):
-        try:
-            result = wolter.sweep(
-                self.params, self.name, self.start_value, self.stop_value,
-                self.steps,
-                progress=lambda done, total: self.progressed.emit(done, total),
-                should_stop=lambda: self._stop)
-        except Exception:
-            self.failed.emit(traceback.format_exc())
-        else:
-            self.swept.emit(result)
 
 
 class SweepTab(QtWidgets.QWidget):
@@ -65,7 +32,13 @@ class SweepTab(QtWidgets.QWidget):
     def __init__(self, params_provider, parent=None):
         super(SweepTab, self).__init__(parent)
         self._params_provider = params_provider
-        self._worker = None
+        #: Its own runner, so a sweep and the main window's trace can run
+        #: at once, as they always could.
+        self._runner = JobRunner(self, gc_guard=True)
+        #: Set by Cancel, read by wolter.sweep before each point. Not the
+        #: runner's cancel, which discards the result: a cancelled sweep
+        #: keeps and plots the points it has already traced.
+        self._stop = threading.Event()
         self._result = None
 
         self.combo = QtWidgets.QComboBox()
@@ -102,8 +75,8 @@ class SweepTab(QtWidgets.QWidget):
         controls.addWidget(self.cancel_button)
         controls.addWidget(self.save_button)
 
-        self.progress = QtWidgets.QProgressBar()
-        self.progress.setVisible(False)
+        self.progress = DelayedProgressBar()
+        self.progress.follow(self._runner)
 
         figure = Figure(figsize=(5, 4), tight_layout=True)
         self.canvas = FigureCanvasQTAgg(figure)
@@ -134,25 +107,20 @@ class SweepTab(QtWidgets.QWidget):
         self.stop.setValue(high)
 
     def run_sweep(self):
-        if self._worker is not None and self._worker.isRunning():
+        if self._runner.busy():
             return
         name = self.combo.currentData()
         self.run_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
-        self.progress.setVisible(True)
-        self.progress.setValue(0)
-
-        self._worker = SweepWorker(self._params_provider(), name,
-                                   self.start.value(), self.stop.value(),
-                                   self.steps.value())
-        self._worker.progressed.connect(self._on_progress)
-        self._worker.swept.connect(self._on_swept)
-        self._worker.failed.connect(self._on_failed)
-        threads.start(self._worker)
+        self._stop = threading.Event()
+        self._runner.start(wolter.sweep, self._params_provider(), name,
+                           self.start.value(), self.stop.value(),
+                           self.steps.value(), should_stop=self._stop.is_set,
+                           on_done=self._on_swept, on_fail=self._on_failed)
 
     def is_running(self):
         """True while a sweep is in flight (drives the Run menu)."""
-        return self._worker is not None and self._worker.isRunning()
+        return self._runner.busy()
 
     def has_result(self):
         """True when there is a sweep worth exporting."""
@@ -160,17 +128,11 @@ class SweepTab(QtWidgets.QWidget):
 
     def cancel(self):
         """Ask the running sweep to stop after the current point."""
-        if self._worker is not None:
-            self._worker.cancel()
-
-    def _on_progress(self, done, total):
-        self.progress.setMaximum(total)
-        self.progress.setValue(done)
+        self._stop.set()
 
     def _on_swept(self, result):
         self.run_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
-        self.progress.setVisible(False)
         self._result = result
         self.save_button.setEnabled(bool(result.valid.any()))
         self._draw(result)
@@ -178,7 +140,6 @@ class SweepTab(QtWidgets.QWidget):
     def _on_failed(self, message):
         self.run_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
-        self.progress.setVisible(False)
         QtWidgets.QMessageBox.critical(self, 'Sweep failed', message)
 
     def _draw(self, result):

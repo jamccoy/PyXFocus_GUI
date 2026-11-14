@@ -71,7 +71,7 @@ The dependency direction is one-way: `settings.py` may import `config.py`; `conf
 
 ## `gui/app.py` — the Qt layer
 
-Wires the above into windows and widgets: a `TraceWorker`/`SweepWorker` pair (Qt threads, so a trace doesn't block the UI), the parameter panel, and the four result views described in **[Wolter-I Explorer GUI](Wolter-I-Explorer-GUI.md)**.
+Wires the above into windows and widgets: a trace and a sweep run on endstation's `JobRunner` (a worker thread each, so neither blocks the UI), the parameter panel, and the four result views described in **[Wolter-I Explorer GUI](Wolter-I-Explorer-GUI.md)**.
 
 ## A note on `examples/`
 

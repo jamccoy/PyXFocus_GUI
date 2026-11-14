@@ -18,36 +18,20 @@ import sys
 import traceback
 
 import numpy as np
+from endstation.qt.jobs import JobRunner
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from PyXFocus.gui import docs_index
 from PyXFocus.gui import docview
 from PyXFocus.gui import settings
-from PyXFocus.gui import threads
 from PyXFocus.gui import wolter
 from PyXFocus.gui.tabs import PlotTabs
 from PyXFocus.gui.wolter import WolterParams
 
 
-class TraceWorker(QtCore.QThread):
-    """Runs a trace off the UI thread so the window stays responsive."""
-
-    #: Named `traced`, not `finished`: a Signal called `finished` on a
-    #: QThread subclass REPLACES QThread's own finished() lifecycle signal,
-    #: which costs you deleteLater wiring and any "wait until the thread has
-    #: actually exited" logic. SweepWorker uses `swept` for the same reason.
-    traced = QtCore.Signal(object)
-    failed = QtCore.Signal(str)
-
-    def __init__(self, params, parent=None):
-        super(TraceWorker, self).__init__(parent)
-        self.params = params
-
-    def run(self):
-        try:
-            self.traced.emit(wolter.trace(self.params))
-        except Exception:
-            self.failed.emit(traceback.format_exc())
+def traceback_text(exc):
+    """The whole traceback, for a failure dialog. JobRunner's default is one line."""
+    return ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
 
 
 class ParameterPanel(QtWidgets.QWidget):
@@ -323,7 +307,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # The pre-restore default; restore_geometry leaves it alone when
         # nothing has been saved yet.
         self.resize(*settings.DEFAULT_SIZE)
-        self._worker = None
+        #: Runs the trace on a pooled worker thread. It outlives nothing:
+        #: destroying the window waits for a trace in flight, and its
+        #: result goes nowhere. gc_guard keeps Python's collector off the
+        #: worker thread, which must never free this window's widgets.
+        self._runner = JobRunner(self, gc_guard=True,
+                                 describe=traceback_text)
         self._result = None
         self.config_path = None
         #: Stashed rather than shown -- see _note_restore.
@@ -491,32 +480,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self._timer.start()
 
     def run_trace(self):
-        if self._worker is not None and self._worker.isRunning():
+        # One trace at a time: a change made while one runs re-arms the
+        # debounce, so the newest parameters are traced once this one lands.
+        if self._runner.busy():
             self._timer.start()
             return
         self.trace_button.setEnabled(False)
         self.statusBar().showMessage('Tracing…')
-        # No parent: see gui/threads.py for why a window must not own it.
-        worker = TraceWorker(self.panel.params())
-        self._worker = worker
-        worker.traced.connect(self._on_finished)
-        worker.failed.connect(self._on_failed)
-        # Without deleteLater every trace leaves a QThread QObject behind
-        # forever; a session with auto-trace on accumulates hundreds. But
-        # dropping the C++ object leaves self._worker dangling, and the
-        # isRunning() guard above then raises RuntimeError on the next
-        # trace -- so forget the reference at the same time. A bound
-        # method rather than a lambda, so Qt disconnects it if this window
-        # is destroyed before the trace finishes.
-        worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(self._forget_worker)
-        threads.start(worker)
-
-    @QtCore.Slot()
-    def _forget_worker(self):
-        """Drop our reference once a worker has finished, if it is still ours."""
-        if self._worker is self.sender():
-            self._worker = None
+        self._runner.start(wolter.trace, self.panel.params(),
+                           on_done=self._on_finished, on_fail=self._on_failed,
+                           report_progress=False)
 
     def _on_finished(self, result):
         self.trace_button.setEnabled(True)
@@ -664,11 +637,7 @@ def main():
     app.aboutToQuit.connect(window.save_settings)
 
     window.show()
-    status = app.exec()
-    # A trace or sweep still running at Quit finishes first: Qt aborts
-    # the process if a QThread is destroyed while it runs.
-    threads.wait_all()
-    return status
+    return app.exec()
 
 
 if __name__ == '__main__':

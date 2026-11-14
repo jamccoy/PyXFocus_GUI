@@ -358,66 +358,97 @@ def test_app_restores_a_session_and_traces_exactly_once():
 
 def test_a_window_dropped_mid_trace_does_not_abort():
     """
-    The trace thread outlives its window, and a late result goes nowhere.
+    Destroying a window waits for its trace, and the late result goes nowhere.
 
-    Qt aborts the process when a running QThread is destroyed, and under
-    PySide6 a window really is destroyed when its last reference goes. So a
-    failure here is not a FAIL line but the suite stopping dead with
-    "QThread: Destroyed while thread is still running".
+    Qt aborts the process when a running thread is destroyed, so a failure
+    here is not a FAIL line but the suite stopping dead. The runner's pool
+    waits for the trace instead, and nothing it delivers reaches the window.
     """
     import gc
     import PyXFocus.gui.app as app_module
-    from PyXFocus.gui import threads
 
+    landed = []
+    original = app_module.MainWindow._on_finished
+    app_module.MainWindow._on_finished = lambda self, r: landed.append(r)
+    try:
+        window = app_module.MainWindow(store=_store())
+        _settle()
+        window._runner.wait(30000)
+        _settle()
+        del landed[:]
+        window.run_trace()
+        assert window._runner.busy(), 'run_trace started nothing'
+        del window
+        gc.collect()
+        _settle()
+        assert landed == [], 'a dropped window was handed its result'
+    finally:
+        app_module.MainWindow._on_finished = original
+
+    # The process is still sound: a fresh window traces as usual.
     window = app_module.MainWindow(store=_store())
     _settle()
-    window.run_trace()
-    assert threads.running(), 'run_trace started nothing to hold'
-    del window
-    gc.collect()
+    window._runner.wait(30000)
     _settle()
-    threads.wait_all()
-    _settle()
-    assert not threads.running(), 'a finished trace was never released'
+    assert window._result is not None, 'a new window could not trace'
 
 
 def test_a_sweep_tab_dropped_mid_sweep_does_not_abort():
-    """The same for the sweep, which keeps its worker on the tab."""
+    """The same for the sweep, which has its own runner on the tab."""
     import gc
-    from PyXFocus.gui import threads
     from PyXFocus.gui.tabs.sweep import SweepTab
 
     tab = SweepTab(lambda: WolterParams())
     tab.steps.setValue(3)
     tab.run_sweep()
-    assert threads.running(), 'run_sweep started nothing to hold'
+    assert tab.is_running(), 'run_sweep started nothing'
     del tab
     gc.collect()
     _settle()
-    threads.wait_all()
+
+
+def test_cancel_keeps_the_points_already_swept():
+    """
+    Cancel stops the sweep after the current point and plots what it has.
+
+    That is why the tab keeps its own stop flag rather than calling the
+    runner's cancel, which discards the result.
+    """
+    from PyXFocus.gui.tabs.sweep import SweepTab
+
+    tab = SweepTab(lambda: WolterParams(num_rays=2000))
+    _KEEP_ALIVE.append(tab)
+    tab.steps.setValue(40)
+    tab.run_sweep()
+    # Cancel once a point has landed, so there is something to keep.
+    import time
+    deadline = time.monotonic() + 60
+    while tab.progress.value() < 1 and time.monotonic() < deadline:
+        APP.processEvents()
+    tab.cancel()
+    tab._runner.wait(60000)
     _settle()
-    assert not threads.running(), 'a finished sweep was never released'
+    assert not tab.is_running()
+    assert tab._result is not None, 'a cancelled sweep plotted nothing'
+    assert 0 < tab._result.completed < 40, (
+        'cancel did not stop the sweep early: %d of 40'
+        % tab._result.completed)
 
 
-def test_repeated_traces_do_not_use_a_deleted_worker():
-    """
-    Regression: workers are deleteLater-ed, so the reference must be dropped.
-
-    Otherwise the isRunning() guard in run_trace touches a destroyed C++
-    object and raises RuntimeError on the second trace -- once the event
-    loop has actually processed the deletion, which is why this settles
-    between traces rather than tracing back to back.
-    """
+def test_back_to_back_traces_each_land():
+    """Three traces in a row on one window each deliver a result."""
     import PyXFocus.gui.app as app_module
     path = os.path.join(tempfile.mkdtemp(), 's.ini')
     window = app_module.MainWindow(S.AppSettings.for_file(path))
     for _ in range(3):
         _settle()
-        if window._worker is not None:
-            window._worker.wait(30000)
+        window._runner.wait(30000)
         _settle()
-        window.run_trace()          # must not raise
-    _settle()
+        window._result = None
+        window.run_trace()
+        window._runner.wait(30000)
+        _settle()
+        assert window._result is not None, 'a trace did not land'
 
 
 #: Containers built by _plot_tabs, kept alive for the run. A PlotTabs with
