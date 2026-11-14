@@ -158,6 +158,9 @@ class SweepTab(QtWidgets.QWidget):
     def _draw(self, result):
         self.ax.clear()
         self.ax2.clear()
+        # clear() puts a twin's axis label back on the left while its
+        # ticks stay right, so the label would sit on top of the HPD one.
+        self.ax2.yaxis.set_label_position('right')
         good = result.valid
 
         self.ax.plot(result.values[good], result.hpd_arcsec[good],

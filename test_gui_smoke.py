@@ -416,6 +416,27 @@ def test_a_sweep_tab_dropped_mid_sweep_does_not_abort():
     _settle()
 
 
+def test_the_throughput_label_stays_on_the_right():
+    """
+    After a sweep is drawn, the throughput axis is labelled on its own side.
+
+    ``ax2.clear()`` moves a twin's label to the left, onto the HPD label,
+    while leaving its ticks on the right.
+    """
+    from PyXFocus.gui.tabs.sweep import SweepTab
+
+    tab = SweepTab(lambda: WolterParams(num_rays=2000))
+    _KEEP_ALIVE.append(tab)
+    tab.steps.setValue(3)
+    tab.run_sweep()
+    tab._runner.wait(60000)
+    _settle()
+    assert tab._result is not None, 'the sweep did not land'
+    assert tab.ax2.yaxis.get_label_position() == 'right', (
+        tab.ax2.yaxis.get_label_position())
+    assert tab.ax2.yaxis.get_ticks_position() == 'right'
+
+
 def test_cancel_keeps_the_points_already_swept():
     """
     Cancel stops the sweep after the current point and plots what it has.
